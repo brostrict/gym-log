@@ -55,6 +55,8 @@ public class UserService {
             "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
 
     private final UserMapper userMapper;
+    private final RoleMapper roleMapper;
+    private final UserRoleMapper userRoleMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final RefreshTokenService refreshTokenService;
@@ -108,8 +110,44 @@ public class UserService {
             throw new BizException(ErrorCode.EMAIL_ALREADY_EXISTS);
         }
 
+        // ---------- 绑定默认角色 ----------
+        //
+        // 放在注册流程里（而不是等到用的时候再补），有两个原因：
+        //   ① 每个用户从诞生起就应该有明确的角色，不存在「无角色用户」这种中间态
+        //   ② 整个 register 方法在同一个事务里——角色绑定失败会连同用户一起回滚，
+        //      不会留下一个没有角色的半成品用户
+        assignRole(user.getId(), Role.CODE_USER);
+
         log.info("用户注册成功 | id={} | email={}", user.getId(), email);
         return user.getId();
+    }
+
+    /**
+     * 给用户授予角色。
+     *
+     * <p><b>为什么要先查 role 表拿到 id</b>：{@code user_role} 存的是
+     * {@code role_id} 外键，不是角色编码。这是关系型数据库的常规做法——
+     * 存 id 比存字符串省空间，且改编码时不用更新所有关联行。
+     *
+     * @throws BizException 角色不存在时抛出（正常情况下不会发生——
+     *                      种子数据在 V3 迁移里已插入；真发生了说明部署有问题，
+     *                      应该快速失败而不是静默跳过）
+     */
+    private void assignRole(Long userId, String roleCode) {
+        Role role = roleMapper.selectOne(
+                new LambdaQueryWrapper<Role>().eq(Role::getCode, roleCode)
+        );
+        if (role == null) {
+            // 这是配置/部署错误，不是业务错误。抛 BizException 会返回 500，
+            // 日志里能看到完整上下文，便于快速定位。
+            throw new BizException(ErrorCode.SYSTEM_ERROR,
+                    "角色不存在：" + roleCode + "，请检查 V3 迁移是否执行成功");
+        }
+
+        UserRole userRole = new UserRole();
+        userRole.setUserId(userId);
+        userRole.setRoleId(role.getId());
+        userRoleMapper.insert(userRole);
     }
 
     /**

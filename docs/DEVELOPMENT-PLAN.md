@@ -118,7 +118,7 @@
 | 1.7 | JwtAuthenticationFilter | ✅ 完成 |
 | 1.8 | SecurityFilterChain 配置 | ✅ 完成 |
 | 1.9 | Refresh Token 与登出 | ✅ 完成 |
-| 1.10 | RBAC 三张表 | ⬜ |
+| 1.10 | RBAC 三张表 | ✅ 完成 |
 | 1.11 | Swagger / OpenAPI | ⬜ |
 | 1.12 | Phase 1 验收 | ⬜ |
 
@@ -586,17 +586,25 @@ Payload: {"sub":"6","email":"alice@example.com","iat":1789628429,"exp":178963202
 
 ---
 
-### 步骤 1.10 —— RBAC 三张表
+### ✅ 步骤 1.10 —— RBAC 三张表
 
 | 项 | 内容 |
 |---|---|
 | **目的** | 把权限模型的地基打好（**权限校验留到 Phase 6**） |
-| **产出** | `V3__init_rbac.sql`：`role` / `permission` / `user_role` / `role_permission` + 种子数据（`USER` / `ADMIN`） |
-| **知识点** | RBAC 模型（用户-角色-权限三层）、**为什么不直接在 user 表加 `is_admin`** |
-| **谁写** | 表结构我写；**你解释一遍为什么是三层而不是两层** |
-| **验收** | 注册用户自动绑定 `USER` 角色；四条种子数据存在 |
+| **产出** | `V3__init_rbac.sql`（4 表 + 种子数据）、`Role`、`UserRole` 及其 Mapper |
+| **知识点** | RBAC 三层模型、**为什么不直接在 user 表加 `is_admin`**、权限命名约定 |
+| **谁写** | 我写，你审查 |
+| **验收** | 注册自动绑定 `USER` 角色；种子数据正确 |
 
-> **本步只建表，不做校验。** 完整的 `@PreAuthorize` 方法级鉴权在 Phase 6。
+**验收结论**：7 张表就位；14 个权限，ADMIN 全有、USER 有 0 个；新注册用户自动获得 `USER` 角色。
+
+> 📖 **详细记录（含「为什么 USER 角色不授予任何权限」的论证）见 [DEV-LOG.md 步骤 1.10](./DEV-LOG.md#步骤-110--rbac-三张表-)。**
+
+**审查时你要能回答**：
+- 为什么是「用户-角色-权限」三层？去掉角色这一层会怎样？
+- 为什么不直接在 `user` 表加 `is_admin` 字段？
+- 为什么 `USER` 角色一个权限都不授？
+- 权限的 `code` 为什么不直接用 `name`？
 
 ---
 

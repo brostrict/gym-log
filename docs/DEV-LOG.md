@@ -25,6 +25,7 @@
 | 1.7 | JwtAuthenticationFilter | 2026-09-17 | ✅ |
 | 1.8 | SecurityFilterChain 配置 | 2026-09-17 | ✅ |
 | 1.9 | Refresh Token 与登出 | 2026-09-17 | ✅ |
+| 1.10 | RBAC 三张表 | 2026-09-17 | ✅ |
 
 ---
 
@@ -833,6 +834,107 @@ token 已经无效时不报错。用户点两次登出、或 token 刚好过期�
 
 ---
 
+## 步骤 1.10 —— RBAC 三张表 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+db/migration/V3__init_rbac.sql    4 张表 + 种子数据
+user/
+├── Role.java / RoleMapper.java
+└── UserRole.java / UserRoleMapper.java
+```
+
+**只建表结构，不做权限校验**——完整的 `@PreAuthorize` 方法级鉴权在 Phase 6。
+
+### 验证结果
+
+| 检查项 | 结果 |
+|---|---|
+| V3 迁移 | `version=3, description=init rbac, success=1` |
+| 表 | 7 张（新增 `role` / `permission` / `user_role` / `role_permission`） |
+| 角色 | `USER` / `ADMIN` 两个 |
+| 权限 | **14 个**，覆盖 5 个资源 |
+| ADMIN 权限数 | **14**（全部） |
+| USER 权限数 | **0**（设计如此，见下） |
+| 注册时绑定角色 | 新用户自动获得 `USER` ✓ |
+| 中文入库 | `HEX(name)` = `E699AEE9809AE794A8E688B7` = 「普通用户」✓ |
+
+### 为什么不用 `user` 表加 `is_admin` 布尔字段
+
+| | `is_admin` | RBAC 三表 |
+|---|---|---|
+| 加角色 | **改表结构** | 插一行数据 |
+| 权限粒度 | 只有「是/否管理员」 | 到「资源+操作」 |
+| 审计 | 说不清「谁能删用户」 | `role_permission` 表就是答案 |
+| 面试 | 「加了个字段」 | 能展开讲角色继承、权限缓存、越权防护 |
+
+**实现成本差不多，面试价值差很多。**
+
+而且 `is_admin` 有个硬伤：**角色与行为耦合**。将来加「教练」角色——
+能看学员数据但不能删用户——布尔字段表达不了，只能再加字段，越加越乱。
+
+### 为什么 USER 角色不授予任何权限
+
+普通用户的所有操作都是「操作自己的数据」。这类权限用
+**「是否登录」+「数据归属校验（`WHERE user_id = ?`）」**就够了。
+
+把「自己的数据」也做成权限项会导致：
+1. 每个新用户注册都要插几十条授权记录
+2. 权限表膨胀到 **用户数 × 权限数**
+
+**`permission` 表只为管理端的跨用户操作服务。**
+
+### 权限命名约定：`资源:操作`
+
+```
+exercise:read / create / update / delete
+template:read / create / update / delete
+user:read / update / disable / delete
+audit:read
+dashboard:read
+```
+
+**注意 read 和 delete 是分开的**——将来可能有人需要「能看但不能删」，
+权限拆细了才能这么配。
+
+### 为什么现在就建表（而不是等 Phase 6）
+
+Phase 1 注册用户时就要**绑定默认角色**。如果等到 Phase 6 才建，
+存量用户全都没有角色，还得写数据修补脚本。
+
+**本项目实际就遇到了这个问题**：`alice@example.com` 是在 V3 之前注册的，
+建表后没有角色，需要手动补一条：
+
+```sql
+INSERT INTO user_role (user_id, role_id)
+SELECT u.id, r.id FROM user u CROSS JOIN role r
+WHERE r.code = 'USER'
+  AND NOT EXISTS (SELECT 1 FROM user_role ur WHERE ur.user_id = u.id);
+```
+
+> **这就是「表结构要早建」的实证**——早建表的代价是多想一步，
+> 晚建表的代价是数据修补脚本 + 停机窗口。
+
+### 踩坑
+
+> ℹ️ **MySQL 的 `DELETE ... JOIN` 需要先选库**
+>
+> ```sql
+> -- ✗ 报 ERROR 1046 (3D000): No database selected
+> DELETE ur FROM gym_log.user_role ur JOIN gym_log.user u ON ...
+>
+> -- ✓ 加 -D 指定默认库，或先 USE
+> mysql --login-path=gymlog -D gym_log -e "DELETE ur FROM user_role ur JOIN user u ON ..."
+> ```
+>
+> 即使表名已经写了库前缀，多表 DELETE 的别名解析仍需要默认库。
+> 单表 DELETE 不受影响。
+
+---
+
 ## 踩坑汇总
 
 | # | 坑 | 一句话教训 |
@@ -847,6 +949,7 @@ token 已经无效时不报错。用户点两次登出、或 token 刚好过期�
 | 8 | Windows 命令行传中文参数损坏 | 用 `-d @文件`；看字节不看显示 |
 | 9 | `isAuthenticated()` 对匿名用户也返回 true | 判断登录要看是不是 `AnonymousAuthenticationToken` |
 | 10 | `/error` 不放行会让错误响应被 401 覆盖 | 接口响应码「不对劲」时，先确认请求有没有进到 Controller |
+| 11 | MySQL 的多表 `DELETE ... JOIN` 需要先选库 | 加 `-D 库名` 或先 `USE`，即使表名写了库前缀 |
 
 > **测试方法本身的坑**：验证「篡改检测」时改了 Base64 的最后一个字符，
 > 结果验签通过了——因为 86 个 Base64 字符 = 516 位，只有 512 位有效，
