@@ -39,6 +39,7 @@
 | 2.3 | 内置动作库种子数据（90 个） | 2026-09-17 | ✅ |
 | 2.4 | 动作查询接口 | 2026-09-17 | ✅ |
 | 2.4b | 修正别名与分类（V6） | 2026-09-17 | ✅ |
+| 2.5 | 自定义动作接口 | 2026-09-17 | ✅ |
 
 ---
 
@@ -1429,6 +1430,130 @@ db/migration/V6__fix_exercise_aliases.sql
 >
 > **教训**：中文搜索测试返回 0 条时，**先核对 URL 编码，再怀疑服务端**。
 > 用 `printf '字符' | xxd` 确认字节，比肉眼数十六进制可靠。
+
+---
+
+## 步骤 2.5 —— 自定义动作接口 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+exercise/
+├── ExerciseService.java          +create / update / delete / loadEditable
+├── ExerciseController.java       +POST / PUT / DELETE
+└── dto/ExerciseSaveRequest.java  创建与编辑共用的请求体
+```
+
+### 验证结果
+
+| # | 场景 | HTTP | 响应 |
+|---|---|---|---|
+| 1 | 创建自定义动作 | 200 | id=97 |
+| 2 | 重名创建 | **409** | `{"code":30003,"同名动作已存在"}` |
+| 3 | **字段规范化** | — | WEIGHT_REPS→`bw_factor=NULL`；REPS_ONLY→`1.00` |
+| 5 | **编辑内置动作** | **403** | `{"code":10002,"内置动作不能修改"}` |
+| 6 | **bob 编辑 alice 的动作** | **404** | `{"code":30001,"动作不存在"}` |
+| 7 | **bob 删除 alice 的动作** | **404** | 同上 |
+| 8 | alice 编辑自己的 | 200 | 改名 + 换器械均生效 |
+| 9 | alice 删除自己的 | 200 | 之后查不到（逻辑删除生效） |
+
+### ★ 核心：三条归属校验路径全部挡住
+
+```java
+private Exercise loadEditable(Long currentUserId, Long id) {
+    Exercise e = mapper.selectById(id);
+    if (e == null || !e.isAvailable())     throw NOT_FOUND;
+
+    if (e.isBuiltIn())                     throw FORBIDDEN("内置动作不能修改");
+    if (!e.isOwnedBy(currentUserId))       throw NOT_FOUND;      // ← 不泄露存在性
+    return e;
+}
+```
+
+**把校验收在一个方法里，是为了避免散落各处导致遗漏。**
+编辑和删除都要做同样的判断，写两遍就容易只改一处。
+
+**注意两种错误码的差异**：
+- 内置动作 → **403**，因为客户端确实有权限知道这个动作存在（它是公开数据），
+  只是没权限改
+- 别人的自定义动作 → **404**，因为**不能泄露「这个 id 存在」**
+
+这个区分不是随意定的：对**公开可见的资源**用 403，对**私有资源**用 404。
+
+### 字段规范化：派生字段该由服务端维护
+
+`bwFactor` 和 `metricType` 是联动的——负重动作不该有体重系数，自重动作必须有。
+
+两种处理方式：
+
+| 方式 | 体验 |
+|---|---|
+| 校验后拒绝 | 用户改计量类型时必须手动清空 `bwFactor`，多一步操作 |
+| **自动规范化** | 服务端按规则处理，用户不用操心 |
+
+选了自动规范化：
+
+```java
+if (metricType == REPS_ONLY) {
+    setBwFactor(request.getBwFactor() == null ? BigDecimal.ONE : request.getBwFactor());
+} else {
+    setBwFactor(null);   // 强制清空
+}
+```
+
+**为什么「强制清空」而不是「报错」**：留着值会让容量计算多算一遍体重——
+这是个**静默的数据错误**，界面上看不出来，只在统计图表里表现为「容量莫名偏高」。
+不如服务端直接抹掉。
+
+自重动作**没填就给默认值 1.0**（按整体重计算），而不是报错——
+用户建一个「负重引体」时未必知道该填多少，1.0 是合理起点，之后可改。
+
+### 请求 DTO 里刻意没有的字段
+
+```java
+// ExerciseSaveRequest 里**没有**这些：
+private Long userId;      // ← 归属必须来自 token
+private Integer status;   // ← 服务端控制
+private Integer deleted;  // ← 服务端控制
+```
+
+**如果 `userId` 由客户端传入**，用户可以伪造 `userId: 0` 去创建「内置动作」，
+或把动作挂到别人名下。**这是最典型的一类越权漏洞。**
+
+### 踩坑
+
+> ⚠️ **中文 JSON 必须用 `-d @文件`，不能内联**
+>
+> 这次又踩了同一个坑——所有内联 JSON 的请求都返回
+> `{"code":10006,"message":"请求格式有误"}`，看起来像接口 bug，
+> 实际是 **Windows 命令行把 UTF-8 中文转坏了**（走 ANSI 代码页 GBK）。
+>
+> ```bash
+> # ✗ 内联：中文被损坏
+> curl -d '{"name":"我的卧推变式",...}'
+>
+> # ✓ 用 heredoc 写文件再传：字节原样保留
+> cat > /tmp/req.json <<'EOF'
+> {"name":"我的卧推变式",...}
+> EOF
+> curl -d @/tmp/req.json
+> ```
+>
+> **这是本项目第 3 次遇到同一类问题**（前两次：API 请求体、SQL 参数）。
+> 已列入「踩坑汇总」并标注为高频问题。
+
+> ℹ️ **`default-property-inclusion: non_null` 会让 null 字段从响应里消失**
+>
+> 验证「`bwFactor` 被清空」时，grep `"bwFactor"` **什么都没匹配到**——
+> 一度以为字段丢了。
+>
+> 实际上是 `application.yml` 里配了 `default-property-inclusion: non_null`，
+> null 字段不序列化。**「字段消失」和「字段为 null」在前端看来是同一件事**
+> （都是 `undefined`），但排查时要意识到这个配置的存在。
+>
+> 这种场景下**直接查数据库**比看响应可靠。
 
 ---
 

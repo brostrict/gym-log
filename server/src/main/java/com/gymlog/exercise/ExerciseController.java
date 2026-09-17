@@ -4,10 +4,16 @@ import com.gymlog.common.PageResponse;
 import com.gymlog.common.Result;
 import com.gymlog.exercise.dto.ExerciseQuery;
 import com.gymlog.exercise.dto.ExerciseResponse;
+import com.gymlog.exercise.dto.ExerciseSaveRequest;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -66,5 +72,54 @@ public class ExerciseController {
         return Result.ok(ExerciseResponse.from(
                 exerciseService.getVisibleById(userId, id)
         ));
+    }
+
+    // ==================================================================
+    // 自定义动作的增删改
+    //
+    // 注意：这些接口只能操作用户**自己创建**的动作。
+    // 内置动作由系统维护，改动会影响所有用户，只能通过管理端修改（Phase 6）。
+    // ==================================================================
+
+    /**
+     * 新建自定义动作。
+     *
+     * <p><b>返回 200 而不是 201</b>：项目统一用 {@code Result} 包装，
+     * 成功即 200。用 201 会导致客户端要处理两种成功状态码，
+     * 而收益只是「更符合 REST 语义」——统一性更重要。
+     */
+    @PostMapping
+    public Result<Long> create(@AuthenticationPrincipal Long userId,
+                               @Valid @RequestBody ExerciseSaveRequest request) {
+        return Result.ok(exerciseService.create(userId, request));
+    }
+
+    /**
+     * 编辑自定义动作。
+     *
+     * <p>用 PUT 而不是 PATCH：这个接口是**整体替换**语义——
+     * 请求里没带的字段会被置空，而不是保留原值。
+     * 客户端必须提交完整对象。
+     */
+    @PutMapping("/{id}")
+    public Result<Void> update(@AuthenticationPrincipal Long userId,
+                               @PathVariable Long id,
+                               @Valid @RequestBody ExerciseSaveRequest request) {
+        exerciseService.update(userId, id, request);
+        return Result.ok();
+    }
+
+    /**
+     * 删除自定义动作（逻辑删除）。
+     *
+     * <p><b>⚠️ 待办</b>：步骤 2.8 计划 CRUD 完成后，这里要补「引用检查」——
+     * 被计划引用的动作不能删，应返回 {@code EXERCISE_IN_USE}。
+     * 详见 {@code ExerciseService.delete} 的注释。
+     */
+    @DeleteMapping("/{id}")
+    public Result<Void> delete(@AuthenticationPrincipal Long userId,
+                               @PathVariable Long id) {
+        exerciseService.delete(userId, id);
+        return Result.ok();
     }
 }
