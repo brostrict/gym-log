@@ -7,6 +7,7 @@ import com.gymlog.common.JwtService;
 import com.gymlog.user.dto.LoginRequest;
 import com.gymlog.user.dto.LoginResponse;
 import com.gymlog.user.dto.RegisterRequest;
+import com.gymlog.user.dto.TokenResponse;
 import com.gymlog.user.dto.UserProfileResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -56,6 +57,7 @@ public class UserService {
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final RefreshTokenService refreshTokenService;
 
     /**
      * 注册新用户。
@@ -111,13 +113,15 @@ public class UserService {
     }
 
     /**
-     * 登录，验证凭据并签发 access token。
+     * 登录，验证凭据并签发 access token + refresh token。
      *
+     * @param ip        客户端 IP，记录在 refresh token 上供审计
+     * @param userAgent 客户端 UA，同上
      * @throws BizException 邮箱或密码不正确（{@link ErrorCode#PASSWORD_INCORRECT}）、
      *                      账号被禁用（{@link ErrorCode#ACCOUNT_DISABLED}）
      */
     @Transactional
-    public LoginResponse login(LoginRequest request) {
+    public LoginResponse login(LoginRequest request, String ip, String userAgent) {
         String email = normalizeEmail(request.getEmail());
         User user = findByEmail(email);
 
@@ -168,19 +172,106 @@ public class UserService {
         touch.setLastLoginAt(LocalDateTime.now());
         userMapper.updateById(touch);
 
-        // ---------- 签发 token ----------
-        // refresh token 在步骤 1.9 实现，那时需要在库里存一条记录
-        // （因为要支持「主动失效」，而纯 JWT 做不到——这也是
-        //   refresh token 不直接用 JWT 的原因）。
+        // ---------- 签发令牌对 ----------
+        //
+        // access token：JWT，无状态，1 小时有效
+        // refresh token：随机字符串，**存库**，30 天有效
+        //
+        // 为什么 refresh token 要存库而不是也做成 JWT：
+        // 因为要支持「主动撤销」——用户登出、改密码、手机丢失，
+        // 都需要让它立刻失效。纯 JWT 是无状态的，签发后无法提前作废。
         String accessToken = jwtService.generateAccessToken(user.getId(), user.getEmail());
+        String refreshToken = refreshTokenService.issue(user.getId(), ip, userAgent);
 
         log.info("用户登录成功 | id={} | email={}", user.getId(), email);
 
         return LoginResponse.of(
                 accessToken,
+                refreshToken,
                 jwtService.getAccessTokenTtlSeconds(),
                 new LoginResponse.UserBrief(user.getId(), user.getEmail(), user.getNickname())
         );
+    }
+
+    /**
+     * 用 refresh token 换取新的令牌对（**令牌轮换**）。
+     *
+     * <p><b>什么是令牌轮换（Token Rotation）</b>：每次刷新时，
+     * 旧的 refresh token 立即作废，同时签发一个**全新的**。
+     *
+     * <p>为什么不复用同一个 refresh token：那样的话，一个 refresh token
+     * 在 30 天里可以被反复使用，一旦泄露就是 30 天的持续访问权。
+     * 轮换之后，泄露的 token 最多只能用一次（甚至可能因为已被使用而失效）。
+     *
+     * <p><b>轮换还带来了「重放检测」的能力</b>：
+     * <pre>
+     *   正常流程：客户端持 RT-1 → 刷新 → 拿到 RT-2，RT-1 作废
+     *   攻击场景：攻击者偷到 RT-1 并使用 → 拿到 RT-3
+     *             真正的用户下次用 RT-1 刷新 → 发现它已作废
+     *             → 说明 RT-1 被泄露过！→ 撤销该用户全部令牌
+     * </pre>
+     * V1 暂未实现「检测到已撤销 token 被使用时撤销全部」，
+     * 只做基础的轮换。这个增强在 Phase 6 安全加固时补。
+     *
+     * @throws BizException refresh token 无效、已撤销或已过期时抛出
+     */
+    @Transactional
+    public TokenResponse refresh(String rawRefreshToken, String ip, String userAgent) {
+        RefreshToken stored = refreshTokenService.findUsable(rawRefreshToken);
+        if (stored == null) {
+            throw new BizException(ErrorCode.REFRESH_TOKEN_INVALID);
+        }
+
+        // 用户在持有有效 refresh token 期间可能被管理员禁用了，
+        // 所以这里要重新查一次用户状态——不能想当然地认为「token 有效 = 用户可用」
+        User user = userMapper.selectById(stored.getUserId());
+        if (user == null) {
+            // 用户被删了但 token 还没过期。撤销掉这个孤儿 token，避免每次都查一遍
+            refreshTokenService.revoke(stored);
+            throw new BizException(ErrorCode.REFRESH_TOKEN_INVALID);
+        }
+        if (user.getStatus() != null && user.getStatus() == User.STATUS_DISABLED) {
+            refreshTokenService.revokeAllForUser(user.getId());
+            throw new BizException(ErrorCode.ACCOUNT_DISABLED);
+        }
+
+        // ---------- 轮换：旧的立即作废，签发全新的 ----------
+        refreshTokenService.revoke(stored);
+
+        String newAccessToken = jwtService.generateAccessToken(user.getId(), user.getEmail());
+        String newRefreshToken = refreshTokenService.issue(user.getId(), ip, userAgent);
+
+        log.info("刷新令牌成功 | userId={}", user.getId());
+
+        return TokenResponse.of(newAccessToken, newRefreshToken,
+                jwtService.getAccessTokenTtlSeconds());
+    }
+
+    /**
+     * 登出：撤销当前设备的 refresh token。
+     *
+     * <p><b>注意这里撤销的是 refresh token，不是 access token。</b>
+     * access token 是无状态 JWT，服务端**无法**让它提前失效——
+     * 它会继续有效直到自然过期（最多 1 小时）。
+     *
+     * <p>这是双 token 设计的一个已知取舍：**登出后 access token 仍有
+     * 最长 1 小时的残留有效期**。要彻底解决只能引入黑名单（存已撤销的
+     * access token 直到过期），但那等于放弃了无状态的优势——
+     * 每个请求都要查一次黑名单，还不如直接用有状态 session。
+     *
+     * <p>1 小时的窗口是业界普遍接受的做法。如果要更短，把
+     * {@code jwt.access-token-ttl} 调小即可，代价是刷新更频繁。
+     */
+    @Transactional
+    public void logout(String rawRefreshToken) {
+        RefreshToken stored = refreshTokenService.findUsable(rawRefreshToken);
+
+        // 即使 token 已经无效也不报错——登出应该是幂等的。
+        // 用户点两次登出、或者 token 刚好过期，都不该看到错误提示。
+        if (stored != null) {
+            refreshTokenService.revoke(stored);
+            log.info("用户登出 | userId={}", stored.getUserId());
+        }
     }
 
     /**

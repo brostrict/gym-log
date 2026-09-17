@@ -37,6 +37,12 @@ public class SecurityConfig {
             "/api/v1/auth/login",
             "/api/v1/auth/refresh",
 
+            // 登出也必须公开：如果要求带 access token，
+            // 那么 access token 过期的用户就**无法登出**了——
+            // 而对用户来说，「登出」在任何时候都应该能做。
+            // 安全性由请求体里的 refresh token 本身保证。
+            "/api/v1/auth/logout",
+
             // ---------- 健康检查：负载均衡器要能探活 ----------
             // 如果这个也要求认证，服务会被误判为不可用而被摘掉
             "/api/v1/system/ping",

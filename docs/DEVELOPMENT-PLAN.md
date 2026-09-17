@@ -117,7 +117,7 @@
 | 1.6 | 登录接口与 JWT 签发 | ✅ 完成 |
 | 1.7 | JwtAuthenticationFilter | ✅ 完成 |
 | 1.8 | SecurityFilterChain 配置 | ✅ 完成 |
-| 1.9 | Refresh Token 与登出 | ⬜ |
+| 1.9 | Refresh Token 与登出 | ✅ 完成 |
 | 1.10 | RBAC 三张表 | ⬜ |
 | 1.11 | Swagger / OpenAPI | ⬜ |
 | 1.12 | Phase 1 验收 | ⬜ |
@@ -562,15 +562,27 @@ Payload: {"sub":"6","email":"alice@example.com","iat":1789628429,"exp":178963202
 
 ---
 
-### 步骤 1.9 —— Refresh Token 与登出
+### ✅ 步骤 1.9 —— Refresh Token 与登出
 
 | 项 | 内容 |
 |---|---|
 | **目的** | access token 短期、refresh token 长期；登出能立即失效 |
-| **产出** | `refresh_token` 表、`/auth/refresh`、`/auth/logout` |
-| **知识点** | 为什么需要双 token（access 短期降低泄露风险，refresh 让用户不用反复登录）、**refresh token 存库而非 JWT 的原因**（要能主动失效）、token 轮换（rotation） |
-| **谁写** | 半半 —— 表结构和接口我写，**失效逻辑你补** |
-| **验收** | access 过期后用 refresh 换到新 token；登出后原 refresh token 立即失效 |
+| **产出** | `V2__init_refresh_token.sql`、`RefreshToken(+Mapper/Service)`、`/auth/refresh`、`/auth/logout` |
+| **知识点** | **refresh token 存库而非 JWT 的原因**、令牌轮换、SHA-256 vs BCrypt 的选择依据 |
+| **谁写** | 我写，你审查 |
+| **验收** | 刷新能换到新令牌对；旧 refresh token 立即失效；登出后无法再刷新 |
+
+**验收结论**：全部通过。库里存的是 SHA-256 哈希（原文不在库中）；轮换后旧 token 立即失效；
+登出后刷新返回 401。
+
+> 📖 **详细记录（含「为什么 token 用 SHA-256 而密码用 BCrypt」的完整论证）见 [DEV-LOG.md 步骤 1.9](./DEV-LOG.md#步骤-19--refresh-token-与登出-)。**
+
+**审查时你要能回答**：
+- refresh token 为什么不用 JWT？用了会怎样？
+- 为什么 token 用 SHA-256 就够，而密码必须用 BCrypt？
+- 什么是令牌轮换？不轮换有什么风险？
+- 登出后 access token 还有效吗？为什么？这个取舍可以接受吗？
+- 登出接口为什么要设为公开？
 
 ---
 
