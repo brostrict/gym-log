@@ -1,0 +1,110 @@
+# ============================================================
+# gym-log
+# ============================================================
+
+# ---------- 敏感配置（务必保持忽略）----------
+# 数据库密码等本地配置，禁止提交
+server/src/main/resources/application-dev.yml
+server/src/main/resources/application-local.yml
+**/application-secret.yml
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+
+# ---------- 后端 server/ (Java / Maven) ----------
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+*.jar
+*.war
+*.ear
+*.log
+hs_err_pid*
+replay_pid*
+
+# ---------- 移动端 app/ (Flutter / Dart) ----------
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/build/
+app/.pub-cache/
+app/.pub/
+app/ios/Pods/
+app/ios/.symlinks/
+app/ios/Flutter/Flutter.framework
+app/ios/Flutter/Flutter.podspec
+app/android/.gradle/
+app/android/.cxx/
+app/android/local.properties
+app/android/key.properties
+app/android/app/debug/
+app/android/app/profile/
+app/android/app/release/
+app/**/*.g.dart
+app/**/*.freezed.dart
+app/**/*.mocks.dart
+*.g.dart.bak
+**/*.iml
+
+# ---------- Web 端 web/ (Node / Vue) ----------
+web/node_modules/
+web/dist/
+web/dist-ssr/
+web/.vite/
+web/coverage/
+web/stats.html
+web/stats.json
+web/.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.pnpm-debug.log*
+
+# ---------- 运行期数据 ----------
+uploads/
+logs/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ---------- IDE ----------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+*.swp
+*.swo
+*~
+.history/
+
+# ---------- 操作系统 ----------
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+# macOS（队友可能在 Mac 上开发）
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ---------- 临时文件 ----------
+*.tmp
+*.temp
+*.bak
+.cache/
