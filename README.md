@@ -46,7 +46,8 @@ gym-log/
 │   ├── REQUIREMENTS.md       功能需求文档（主文档）
 │   ├── METRICS.md            指标口径与图表规格
 │   ├── TIMER-SPEC.md         跟练计时状态机与平台降级
-│   └── DEVELOPMENT-PLAN.md   开发计划书（施工图）
+│   ├── DEVELOPMENT-PLAN.md   开发计划书（施工图）
+│   └── DEV-LOG.md            开发日志（实际进展与踩坑记录）
 ├── server/                   Spring Boot 后端
 ├── app/                      Flutter 移动端
 ├── web/                      Vue 3 Web 端
@@ -63,6 +64,7 @@ gym-log/
 2. **[docs/METRICS.md](docs/METRICS.md)** —— 每个指标怎么算、每张图画什么、什么情况下不画。
 3. **[docs/TIMER-SPEC.md](docs/TIMER-SPEC.md)** —— 跟练功能的实现规格。计时、后台运行、跨平台差异的约束都在这里。
 4. **[docs/DEVELOPMENT-PLAN.md](docs/DEVELOPMENT-PLAN.md)** —— **施工图**。按什么顺序、分几步、每步谁写、怎么验收。每次开工前看这份。
+5. **[docs/DEV-LOG.md](docs/DEV-LOG.md)** —— **开发日志**。每步实际做了什么、验证到什么、踩了什么坑。想回顾或排查同类问题时看这份。
 
 > **术语以 [REQUIREMENTS.md 第 3 节](docs/REQUIREMENTS.md#3-术语表) 为唯一来源。** 其他文档出现的领域词都以那里的定义为准。
 

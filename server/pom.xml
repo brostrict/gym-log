@@ -28,6 +28,8 @@
         <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <!-- 第三方依赖版本集中在这里，便于统一升级 -->
+        <jjwt.version>0.12.7</jjwt.version>
     </properties>
 
     <dependencies>
@@ -48,6 +50,35 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!--
+          JWT（JSON Web Token）。jjwt 是 Java 生态最常用的实现。
+
+          为什么是三个 artifact：
+            jjwt-api    —— 编译期用的接口
+            jjwt-impl   —— 运行期实现（scope=runtime，编译时看不到）
+            jjwt-jackson—— 用 Jackson 做 JSON 序列化（scope=runtime）
+
+          这样拆分是为了让业务代码只依赖 api，
+          换实现（比如换成 nimbus-jose-jwt）时不用改代码。
+        -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
         </dependency>
 
         <!--

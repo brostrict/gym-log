@@ -1,0 +1,497 @@
+# gym-log 开发日志
+
+> **本文档是回顾性的**：按时间顺序记录每一步实际做了什么、验证到了什么、踩了什么坑。
+>
+> | 文档 | 定位 |
+> |---|---|
+> | [REQUIREMENTS.md](./REQUIREMENTS.md) | 要做什么，为什么 |
+> | [DEVELOPMENT-PLAN.md](./DEVELOPMENT-PLAN.md) | 按什么顺序做，怎么验收（前瞻） |
+> | **本文档** | **实际做了什么，验证到什么（回顾）** |
+>
+> **每完成一个步骤，在这里追加一条记录。**
+
+---
+
+## 目录
+
+| 步骤 | 名称 | 日期 | 状态 |
+|---|---|---|---|
+| 1.1 | Spring Boot 项目骨架 | 2026-09-17 | ✅ |
+| 1.2 | 数据库与 Flyway 迁移 | 2026-09-17 | ✅ |
+| 1.3 | 统一响应与全局异常处理 | 2026-09-17 | ✅ |
+| 1.4 | 用户实体与 Mapper | 2026-09-17 | ✅ |
+| 1.5 | 注册接口 | 2026-09-17 | ✅ |
+| 1.6 | 登录接口与 JWT 签发 | 2026-09-17 | ✅ |
+
+---
+
+## 步骤 1.1 —— Spring Boot 项目骨架 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+建出能启动的空项目。**只加 4 个依赖**：`web` / `validation` / `lombok` / `test`。
+
+```
+server/
+├── pom.xml
+└── src/main/
+    ├── java/com/gymlog/GymLogApplication.java
+    └── resources/application.yml
+```
+
+### 验证结果
+
+| 检查项 | 结果 |
+|---|---|
+| `mvn compile` | BUILD SUCCESS（首次 4 分钟，主要是下载依赖） |
+| 8080 端口 | LISTENING |
+| `GET /` | HTTP 404 + Spring 标准 JSON 错误体 |
+| Jackson 配置 | 生效（时间格式 `2026-09-17 13:56:35`） |
+
+那个 404 是关键证据：**连接没被拒，请求真的进到了 DispatcherServlet**，只是还没有 Controller。
+
+### 为什么依赖是逐步加的
+
+**每加一个依赖，你能清楚看到它是干什么用的、不加会怎样。** 一次性堆十几个，出问题根本不知道是谁的锅。
+
+特别是 **Security 不能现在加**——一旦引入，Spring Security 默认锁住所有接口并生成随机密码，1.3–1.5 的接口就没法直接测了。
+
+### 踩坑
+
+> ⚠️ **坑 1：不能只看「最新版本」**
+>
+> Maven Central 上 `mysql-connector-j` 最新是 `26.7.0`、`flyway-mysql` 是 `13.7.0`、`springdoc` 是 `3.1.1`——**这三个都是 Spring Boot 4 时代的东西**，跟本机 JDK 17 不匹配。
+>
+> 选版本要看**与 Boot 版本配套的那条线**，不是看谁数字大。
+>
+> | 依赖 | 选用 | Maven Central「最新」 |
+> |---|---|---|
+> | Spring Boot | 3.5.3 | — |
+> | springdoc-openapi | **2.9.1**（2.x 才对应 Boot 3） | 3.1.1 ✗ |
+> | mysql-connector-j | 不写版本，BOM 管 | 26.7.0 ✗ |
+> | flyway | 不写版本，BOM 管 | 13.7.0 ✗ |
+
+> ⚠️ **坑 2：Windows 中文环境的编码**
+>
+> Maven 报 `platform encoding: GBK`。pom 里必须显式设 `project.build.sourceEncoding=UTF-8`，否则**带中文注释的源码会编译成乱码**。
+
+---
+
+## 步骤 1.2 —— 数据库与 Flyway 迁移 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+server/
+├── db/init.sql                                    建库（只跑一次）
+└── src/main/resources/
+    ├── application-dev.yml                        数据库配置（gitignored）
+    ├── application-dev.yml.example               模板（会提交）
+    └── db/migration/V1__init_user.sql             user 表
+```
+
+### 验证结果
+
+| 检查项 | 结果 |
+|---|---|
+| Flyway 记录 | `version=1, success=1, execution_time=20ms` |
+| 表 | `flyway_schema_history` + `user` |
+| `user` 字段 | **18 个**，类型/可空/默认值全部符合设计 |
+| 库字符集 | `utf8mb4 / utf8mb4_0900_ai_ci` |
+| 启动耗时 | 1.826 秒 |
+| HikariCP | 自动装配并启动 |
+
+完整启动日志：
+
+```
+profile    : "dev"
+Flyway     : Migrating schema `gym_log` to version "1 - init user"
+             Successfully applied 1 migration, now at version v1
+HikariPool-1: Start completed
+Tomcat     : started on port 8080
+Started GymLogApplication in 1.826 seconds
+```
+
+### 关键设计
+
+**为什么用 Flyway**：手动改表的致命问题是**不可追溯**——你本地加了个字段，同事拉下代码跑不起来，因为他不知道要加。Flyway 把结构变更变成**有版本号的代码**，跟着 git 走。
+
+命名规则 `V<版本号>__<描述>.sql`——**两个下划线**。⚠️ 已执行过的脚本**不能再改**，Flyway 会校验 checksum 并拒绝启动。
+
+**`utf8mb4` 而不是 `utf8`**：MySQL 的 `utf8` 是**假的 UTF-8**，只支持 3 字节，**存不了 emoji**。用户昵称打个 😀 就直接报错。
+
+**不用外键约束**：国内互联网公司的普遍做法（阿里 Java 规范明确写了）。外键在高并发下因锁竞争影响性能，且分库分表后无法维护。
+
+### 踩坑
+
+> 🔴 **坑 3：`application-dev.yml` 建了但没生效**
+>
+> 报错：`Failed to configure a DataSource: 'url' attribute is not specified ... (no profiles are currently active)`
+>
+> **原因**：Spring Boot 的加载规则是——`application.yml` **总是**加载；`application-{profile}.yml` **只在对应 profile 激活时**才加载。
+>
+> **修法用 `default` 而不是 `active`**：
+>
+> | 写法 | 行为 | 风险 |
+> |---|---|---|
+> | `profiles.active: dev` | **强制**用 dev，生产设了 `SPRING_PROFILES_ACTIVE=prod` 也会被覆盖 | ⚠️ 「把开发配置带上生产」的事故源 |
+> | `profiles.default: dev` | **兜底**——没人指定时用 dev；生产设了 prod 就用 prod | ✅ 正确做法 |
+
+> ⚠️ **坑 4：密码写进了会被提交的文件**
+>
+> 修改密码时同时改了 `application-dev.yml`（已 gitignore，正确 ✓）和 `application-dev.yml.example`（**会被提交到公开仓库** ✗）。已恢复为占位符。
+>
+> 另发现 example 里写成 `password:<值>` 的**冒号后缺空格**形式。YAML 要求映射的冒号后必须有空格，否则整行被当成一个键名，配置读不到。
+>
+> **教训**：改配置前先 `git check-ignore <文件>` 确认它是否会被提交。
+
+### 两个文件的分工
+
+| | `application-dev.yml` | `application-dev.yml.example` |
+|---|---|---|
+| **谁读它** | Spring Boot 启动时加载 | 只有人会打开看 |
+| **内容** | 真实密码 | 占位符 |
+| **进 git 吗** | ❌ 被忽略 | ✅ **会提交** |
+| **用途** | 本机跑起来 | 告诉别人「该建哪些配置项」 |
+
+别人克隆项目后：`cp application-dev.yml.example application-dev.yml`，然后填自己的密码。
+
+---
+
+## 步骤 1.3 —— 统一响应与全局异常处理 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+common/
+├── Result.java                  统一响应体（不可变，静态工厂创建）
+├── ErrorCode.java               错误码枚举，10 个模块段位
+├── BizException.java            业务异常
+└── GlobalExceptionHandler.java  全局异常处理器
+system/
+└── SystemController.java        健康检查
+```
+
+### 验证结果
+
+| 场景 | HTTP | 响应体 |
+|---|---|---|
+| 正常 | 200 | `{"code":0,"message":"成功","data":{...}}` |
+| 业务异常 | **409** | `{"code":20001,"message":"该邮箱已被注册"}` |
+| 业务异常 + 自定义文案 | **400** | `{"code":60002,"message":"体重 500kg 超出合理范围（20–300kg）"}` |
+| 未预期异常 | **500** | `{"code":10005,"message":"系统繁忙，请稍后重试"}`（无堆栈） |
+| 路径不存在 | 404 | `{"code":10003,...}` |
+| 方法不支持 | 405 | `{"code":10004,...}` |
+
+日志级别实测：
+
+```
+WARN  业务异常 | code=20001 | message=该邮箱已被注册
+      → 后续堆栈帧数 = 0
+
+ERROR 未预期的异常 | GET /api/v1/system/demo/system-error
+      java.lang.IllegalStateException: ...
+        at com.gymlog.system.SystemController.demoSystemError(SystemController.java:65)
+      → 堆栈直接定位到出问题的行
+```
+
+### 三个设计决策
+
+**① 错误码分段编号**，留好空位：
+
+```
+0        成功
+1xxxx    通用      10001 未登录 · 10002 无权限 · 10005 系统错误
+2xxxx    用户      20001 邮箱已注册 · 20003 密码错误
+3xxxx    动作库    30001 动作不存在
+4xxxx    计划      40002 计划已开始不能改
+5xxxx    训练会话
+6xxxx    身体数据  60002 数值超范围
+7xxxx    饮食
+8xxxx    管理后台
+9xxxx    外部服务  90001 AI 不可用
+```
+
+**为什么不用 HTTP 状态码当业务码**：HTTP 状态码只有几十个且语义固定。业务错误有几十上百种——「邮箱已注册」「计划已过期」「组数超上限」都塞进 400，前端就没法区分该给用户看哪句提示。
+
+**② 错误码同时携带 HTTP 状态**：不能一律返回 200。从运维角度，一个「HTTP 200 但 body 里写着系统错误」的响应是灾难——**网关、监控告警、CDN 缓存全部失效**。
+
+**③ 业务异常 WARN 不打栈，系统异常 ERROR 打全栈**：业务失败是设计内的分支（「邮箱已注册」在用户手滑时天天发生），打全栈会刷爆日志且无排查价值。
+
+### 踩坑
+
+> 🔴 **坑 5：中文日志乱码**
+>
+> 现象：日志里 `业务异常` 显示成 `ҵ���т쳣`。
+>
+> 根因：**Java 18 之前 `file.encoding` 跟随操作系统**，中文 Windows 上是 `GBK`；而现代终端按 UTF-8 解码。
+>
+> 修法：
+> - `application.yml` → `logging.charset.console/file: UTF-8`
+> - `pom.xml` → `maven-surefire-plugin` 加 `<argLine>-Dfile.encoding=UTF-8</argLine>`
+>
+> 只设 console 不够——日志同时写文件时，文件也需要 UTF-8，否则用编辑器打开同样乱码。
+
+---
+
+## 步骤 1.4 —— 用户实体与 Mapper ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+user/
+├── User.java                    实体，映射 user 表
+└── UserMapper.java              继承 BaseMapper
+config/
+└── MybatisPlusConfig.java       分页插件
+test/
+└── UserMapperTest.java          集成测试
+```
+
+### 验证结果
+
+测试通过（`Tests run: 1, Failures: 0`），SQL 日志同时验证了三个机制：
+
+```sql
+-- ① 插入只包含非 null 字段，其余交给数据库 DEFAULT
+INSERT INTO user ( email, password_hash, nickname, gender, birth_year, height_cm, goal, experience )
+VALUES ( ?,?,?,?,?,?,?,? )
+
+-- ② 逻辑删除自动生效 —— 没写任何相关代码，AND deleted=0 是自动加的
+SELECT id,email,...,deleted FROM user WHERE id=? AND deleted=0
+
+-- ③ 数据库默认值经 ORM 往返正确
+Row: 1, ..., 1, 1, 1995, 175.5, MUSCLE_GAIN, INTERMEDIATE, kg, local, null, 0, ...
+                ↑ status=1      ↑ unit_pref=kg      ↑ provider=local
+```
+
+### 关键设计
+
+**逻辑删除是「配置一次、全局生效」的**。在 `application.yml` 里声明 `logic-delete-field: deleted` 之后，所有 `selectById` / `selectList` 都会自动带上 `deleted=0`，不需要每处手写。
+
+**两个安全防护**（写在 `User` 实体上）：
+
+| 字段 | 防护 | 防的是什么 |
+|---|---|---|
+| `passwordHash` | `@JsonIgnore` | 接口直接返回实体时，密码哈希泄露给前端 |
+| `passwordHash` | `@ToString.Exclude` | `log.info("user={}", user)` 把哈希写进日志 |
+
+第二条容易被忽略——**日志往往比数据库更容易被看到**（运维、日志平台、误提交的日志文件）。BCrypt 哈希可以离线暴力破解，不受登录接口限流约束。
+
+### 踩坑
+
+> 🔴 **坑 6：MyBatis-Plus 3.5.9 起分页插件被拆到独立模块**
+>
+> 只引 `mybatis-plus-spring-boot3-starter` 时，`PaginationInnerInterceptor`
+> **编译期就报 cannot be resolved**——`mybatis-plus-extension` 里已经没有这个类了。
+>
+> 原因：分页插件依赖 **JSqlParser**（不小的第三方 SQL 解析库），而多数项目只用基础 CRUD。3.5.9 把它拆成独立模块。
+>
+> 修法：额外引入 `com.baomidou:mybatis-plus-jsqlparser`（版本与 starter 对齐）。
+
+---
+
+## 步骤 1.5 —— 注册接口 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+user/
+├── AuthController.java          POST /api/v1/auth/register
+├── UserService.java             业务逻辑
+└── dto/RegisterRequest.java     请求参数 + 校验注解
+config/
+└── PasswordConfig.java          BCryptPasswordEncoder
+```
+
+### 验证结果
+
+| 场景 | HTTP | 响应 |
+|---|---|---|
+| 正常注册 | 200 | `{"code":0,"data":6}` |
+| 重复邮箱 | **409** | `{"code":20001,"message":"该邮箱已被注册"}` |
+| **大写邮箱 `ALICE@Example.COM`** | **409** | 同样判为重复 —— 归一化生效 |
+| 邮箱格式错误 | 400 | `"邮箱格式不正确"` |
+| 密码太短（3 位） | 400 | `"密码长度需在 8-32 位之间"` |
+| 昵称为空 | 400 | `"昵称不能为空"` |
+
+数据库侧：
+
+```
+email = alice@example.com      ← 已转小写
+password_hash = $2a$10$...     ← BCrypt cost 10，长度 60
+库中无明文密码 ✓
+```
+
+### 核心设计：邮箱唯一性的两层防护
+
+```java
+// 第一层：应用层查重 —— 为了友好提示，覆盖 99% 的情况
+if (existsByEmail(email)) throw new BizException(EMAIL_ALREADY_EXISTS);
+
+try {
+    userMapper.insert(user);
+} catch (DuplicateKeyException e) {
+    // 第二层：数据库唯一索引 —— 真正的保证
+    throw new BizException(EMAIL_ALREADY_EXISTS);
+}
+```
+
+```
+T1: 请求A 查邮箱 → 不存在
+T2: 请求B 查邮箱 → 不存在     ← 两个请求都通过了检查
+T3: 请求A 插入 → 成功
+T4: 请求B 插入 → 唯一索引冲突 ✗
+```
+
+**应用层的「先查后插」永远无法保证唯一性**——这不是代码写得不严谨，是并发场景的固有性质。**真正的保证只能来自数据库唯一索引。**
+
+### 另外两个决策
+
+**只引 `spring-security-crypto`，不引完整 starter**：密码加密只需要 `BCryptPasswordEncoder`（零依赖小包）。完整 starter 一旦引入，Spring Security **默认锁住所有接口**并生成随机密码。
+
+**Service 不写接口**：国内常见 `UserService` + `UserServiceImpl`。本项目不这么做——只有一个实现时接口是纯负担。Spring 官方团队近年也明确建议不要写没有必要的接口。
+
+### BCrypt 原理
+
+| | MD5 / SHA-256 | BCrypt |
+|---|---|---|
+| 速度 | 极快（GPU 每秒数十亿次） | **故意设计得慢** |
+| 盐 | 需手动管理 | **内置**，存在哈希串里 |
+| 抗暴力破解 | 弱 | 强 |
+
+哈希串形如：
+
+```
+$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy
+ │  │  └── 22 字符盐 + 31 字符哈希
+ │  └───── cost = 10（迭代 2^10 = 1024 次）
+ └──────── 算法版本
+```
+
+**cost 存在哈希串自身里**，所以调高 cost 不影响已有密码——老密码用老 cost 验证，新密码用新 cost 生成，可平滑升级。
+
+### 已知限制
+
+参数校验失败时**只返回第一条错误**。实测「全空」请求返回「密码长度需在 8-32 位之间」而非「邮箱不能为空」——字段错误顺序不保证。
+
+这是有意取舍（移动端 Toast 一次给一条更清晰）。
+
+---
+
+## 步骤 1.6 —— 登录接口与 JWT 签发 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+common/
+├── JwtProperties.java      配置绑定（含密钥）
+└── JwtService.java         签发与解析
+user/
+├── dto/LoginRequest.java
+├── dto/LoginResponse.java  record + 嵌套 record
+├── UserService.java        +login()
+└── AuthController.java     +POST /auth/login
+```
+
+### 验证结果
+
+| 场景 | HTTP | 响应 |
+|---|---|---|
+| 正常登录 | 200 | 含 `accessToken` / `tokenType: Bearer` / `expiresIn: 3600` / user |
+| 密码错误 | 401 | `{"code":20003,"message":"邮箱或密码不正确"}` |
+| **邮箱不存在** | 401 | **与上面完全一致** —— 无账号枚举漏洞 |
+| 禁用账号 + 正确密码 | **403** | `{"code":20004,"message":"账号已被禁用，请联系管理员"}` |
+| 禁用账号 + 错误密码 | 401 | `20003` —— **不泄露禁用状态** |
+| 参数校验 | 400 | 邮箱格式 / 密码为空 |
+
+### JWT 实际内容
+
+```
+Header : {"alg":"HS512"}     ← jjwt 按密钥长度（512 位）自动选的，比预期的 HS256 更强
+Payload: {"sub":"6","email":"alice@example.com","iat":1789628429,"exp":1789632029}
+         exp − iat = 3600 秒，与配置的 1h 一致 ✓
+Signature: zW7OzBAOXXhMiLZQanDv... (86 字符)
+```
+
+**⚠️ Payload 只是 Base64 编码，不是加密。** 上面那行 payload 用 `base64 -d` 就能解出来，任何人都能做。它的安全性来自「**签名不可伪造**」，不是「内容不可读」。
+
+所以**只能放「泄露了也不致命」的信息**——绝不能放密码、手机号、身份证号。
+
+### 三个安全设计（本步最值钱的部分）
+
+**① 账号枚举防护**
+
+密码错误和邮箱不存在返回**完全一样**的响应。如果分成两种提示，等于**直接告诉攻击者哪些邮箱注册过**——这是撞库的第一步。
+
+**② 时序攻击防护（实测有效）**
+
+| | 未防护 | 已防护（实测） |
+|---|---|---|
+| 邮箱存在 + 密码错 | ~80ms（跑了 BCrypt） | **60 ms** |
+| 邮箱不存在 | ~1ms（直接返回） | **59 ms** |
+
+攻击者不需要看报错内容，**只看响应时间**就能批量判断邮箱是否注册过。修法是用户不存在时也拿假哈希跑一次 BCrypt。实测差值 **1ms**，信号已消除。
+
+**③ 检查顺序：密码校验在账号状态检查之前**
+
+```
+禁用账号 + 正确密码 → 403 告诉你账号被禁用
+禁用账号 + 错误密码 → 401 只说邮箱或密码不正确
+```
+
+如果反过来先查状态，攻击者就能靠「返回禁用还是密码错」来枚举账号。**只有密码正确的人，才配知道这个账号被禁用了。**
+
+### 密钥管理
+
+| 项 | 做法 |
+|---|---|
+| 存放 | `application-dev.yml`（已 gitignore），生产用环境变量 `JWT_SECRET` 覆盖 |
+| 生成 | `head -c 64 /dev/urandom \| base64` → 64 字节（512 位） |
+| 校验 | 构造器里检查非空 + 长度 ≥ 32 字节，**不合法则启动直接失败** |
+| 存储格式 | Base64——避免密钥含换行/控制字符导致 YAML 解析异常 |
+
+**为什么在构造器里校验而不是用时再检查**：配置错误应该**启动时立刻失败**，而不是等第一个用户登录才炸。这是「**快速失败**」原则——暴露得越早，排查成本越低。
+
+### 踩坑
+
+> ⚠️ **坑 8：Windows 命令行传中文参数会损坏**
+>
+> 现象：`curl -d '{"nickname":"待禁用"}'` 返回 `{"code":10006,"message":"请求格式有误"}`，换成 `-d @body.json`（从文件读）就成功。
+>
+> 原因：**Windows 命令行参数走 ANSI 代码页（GBK）**，Git Bash 传出的 UTF-8 字节在传给 curl 时被转换坏，导致 JSON 解析失败。
+>
+> **这不是接口 bug**——库里的昵称十六进制是 `E5BE85E7A681`，中文完全正确。
+>
+> **教训**：测试含中文的接口时用 `-d @文件`；排查编码问题**看字节**（`HEX()` / `xxd`），不要被终端的显示误导。
+
+---
+
+## 踩坑汇总
+
+| # | 坑 | 一句话教训 |
+|---|---|---|
+| 1 | Maven Central 上的「最新版」可能是给 Spring Boot 4 的 | 看与 Boot 配套的版本线，不是看谁数字大 |
+| 2 | Windows 中文环境的 platform encoding 是 GBK | pom 必须显式设 `sourceEncoding=UTF-8` |
+| 3 | `application-dev.yml` 建了但 profile 没激活 | 用 `profiles.default` 不用 `profiles.active` |
+| 4 | 密码写进了会被提交的 example 文件 | 改配置前先 `git check-ignore` |
+| 5 | 中文日志乱码 | Java 18 前 `file.encoding` 跟随操作系统 |
+| 6 | MyBatis-Plus 3.5.9 拆出了分页插件 | 要额外引 `mybatis-plus-jsqlparser` |
+| 7 | SQL 日志绕过 Logback 导致编码失控 | 用 `Slf4jImpl` 不用 `StdOutImpl` |
+| 8 | Windows 命令行传中文参数损坏 | 用 `-d @文件`；看字节不看显示 |
+
+> **这份清单本身就是这个项目最有价值的产出之一。**
+> Windows 中文环境做 Java 开发，编码问题几乎必然遇到，且表现形式各不相同
+> （源码乱码、日志乱码、命令行参数乱码、SQL 参数乱码）。

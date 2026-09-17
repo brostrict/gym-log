@@ -3,6 +3,9 @@ package com.gymlog.user;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.gymlog.common.BizException;
 import com.gymlog.common.ErrorCode;
+import com.gymlog.common.JwtService;
+import com.gymlog.user.dto.LoginRequest;
+import com.gymlog.user.dto.LoginResponse;
 import com.gymlog.user.dto.RegisterRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +14,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Locale;
 
 /**
@@ -39,8 +43,18 @@ import java.util.Locale;
 @RequiredArgsConstructor
 public class UserService {
 
+    /**
+     * 一个固定的 BCrypt 哈希，用于「用户不存在时也跑一次密码校验」。
+     *
+     * <p>见 {@link #login} 里对时序攻击的说明。
+     * 这个哈希对应的明文是什么并不重要——校验结果会被直接丢弃。
+     */
+    private static final String DUMMY_HASH =
+            "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
+
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
+    private final JwtService jwtService;
 
     /**
      * 注册新用户。
@@ -93,6 +107,91 @@ public class UserService {
 
         log.info("用户注册成功 | id={} | email={}", user.getId(), email);
         return user.getId();
+    }
+
+    /**
+     * 登录，验证凭据并签发 access token。
+     *
+     * @throws BizException 邮箱或密码不正确（{@link ErrorCode#PASSWORD_INCORRECT}）、
+     *                      账号被禁用（{@link ErrorCode#ACCOUNT_DISABLED}）
+     */
+    @Transactional
+    public LoginResponse login(LoginRequest request) {
+        String email = normalizeEmail(request.getEmail());
+        User user = findByEmail(email);
+
+        // ---------- 第一道关：时序攻击防护 ----------
+        //
+        // 天真写法是：if (user == null) throw PASSWORD_INCORRECT;
+        // 看起来没问题，但会泄露「这个邮箱是否注册过」：
+        //
+        //   邮箱不存在 → 直接抛异常，耗时 ~1ms
+        //   邮箱存在   → 跑一次 BCrypt 比对，耗时 ~80ms
+        //
+        // 攻击者不需要看报错内容，**只看响应时间**就能批量判断哪些邮箱注册过。
+        // 这叫「用户名枚举」，是攻击的第一步——拿到有效邮箱后再针对性撞库。
+        //
+        // 修法：用户不存在时，也拿一个假哈希跑一次 BCrypt。
+        // 两种情况的耗时变得接近，时序信号就消失了。
+        if (user == null) {
+            passwordEncoder.matches(request.getPassword(), DUMMY_HASH);
+            throw new BizException(ErrorCode.PASSWORD_INCORRECT);
+        }
+
+        // ---------- 第二道关：密码比对 ----------
+        //
+        // matches() 做的事：从哈希串里拆出盐和 cost，用同样的参数
+        // 把明文密码再算一遍，比对结果。所以不需要单独存盐。
+        if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
+            // ⚠️ 注意返回的错误码和「用户不存在」时**完全一样**。
+            // 如果分成「用户不存在」和「密码错误」两种提示，
+            // 等于直接告诉攻击者哪些邮箱是有效的。
+            throw new BizException(ErrorCode.PASSWORD_INCORRECT);
+        }
+
+        // ---------- 第三道关：账号状态 ----------
+        //
+        // 放在密码校验**之后**：如果先检查状态，攻击者就能通过
+        // 「返回『账号已禁用』还是『密码错误』」来枚举账号。
+        // 只有密码正确的人，才配知道这个账号被禁用了。
+        if (user.getStatus() != null && user.getStatus() == User.STATUS_DISABLED) {
+            throw new BizException(ErrorCode.ACCOUNT_DISABLED);
+        }
+
+        // ---------- 更新最后登录时间 ----------
+        // 只 set 需要改的字段：MyBatis-Plus 的 updateById 会跳过 null 字段，
+        // 所以这里构造一个「只有 id 和 lastLoginAt」的对象就够了，
+        // 不会把其他字段覆盖成 null。
+        User touch = new User();
+        touch.setId(user.getId());
+        touch.setLastLoginAt(LocalDateTime.now());
+        userMapper.updateById(touch);
+
+        // ---------- 签发 token ----------
+        // refresh token 在步骤 1.9 实现，那时需要在库里存一条记录
+        // （因为要支持「主动失效」，而纯 JWT 做不到——这也是
+        //   refresh token 不直接用 JWT 的原因）。
+        String accessToken = jwtService.generateAccessToken(user.getId(), user.getEmail());
+
+        log.info("用户登录成功 | id={} | email={}", user.getId(), email);
+
+        return LoginResponse.of(
+                accessToken,
+                jwtService.getAccessTokenTtlSeconds(),
+                new LoginResponse.UserBrief(user.getId(), user.getEmail(), user.getNickname())
+        );
+    }
+
+    /**
+     * 按邮箱查用户。
+     *
+     * <p>用 {@code selectOne} + {@code LambdaQueryWrapper}，
+     * 字段名通过方法引用指定，编译期可检查。
+     */
+    private User findByEmail(String email) {
+        return userMapper.selectOne(
+                new LambdaQueryWrapper<User>().eq(User::getEmail, email)
+        );
     }
 
     /**
