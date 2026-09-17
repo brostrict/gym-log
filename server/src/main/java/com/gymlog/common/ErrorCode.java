@@ -64,6 +64,17 @@ public enum ErrorCode {
     PROGRAM_ALREADY_STARTED(40002, "计划已开始，不能直接修改，请创建新版本", HttpStatus.CONFLICT),
     PROGRAM_VERSION_CONFLICT(40003, "计划已被其他设备修改，请刷新后重试", HttpStatus.CONFLICT),
     SUPERSET_GROUP_INVALID(40004, "超级组配置不合法", HttpStatus.BAD_REQUEST),
+    PROGRAM_DAY_NOT_FOUND(40005, "训练日不存在", HttpStatus.NOT_FOUND),
+    /**
+     * 计划里使用了当前版本算不出来的目标强度。
+     *
+     * <p>V1 只支持绝对重量。{@code %1RM} 需要先有 1RM 数据，
+     * {@code RPE} 本身就是「不指定重量」——两者都算不出具体公斤数。
+     *
+     * <p><b>单独给一个错误码而不是复用 BAD_REQUEST</b>：
+     * 前端要据此**引导用户去设置 1RM**，而不是笼统提示「参数有误」。
+     */
+    PROGRAM_TARGET_UNSUPPORTED(40006, "计划使用了当前版本暂不支持的目标强度", HttpStatus.BAD_REQUEST),
 
     // ==================== 5xxxx 训练会话 ====================
     SESSION_NOT_FOUND(50001, "训练记录不存在", HttpStatus.NOT_FOUND),

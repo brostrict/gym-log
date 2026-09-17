@@ -22,12 +22,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -48,6 +45,8 @@ public class ProgramService {
     private final ProgramTemplateMapper templateMapper;
     /** 解析模板的 JSON 结构。复用 Spring 容器里那一个，不用自己 new */
     private final ObjectMapper objectMapper;
+    /** 归属校验、排序规则、批量加载 —— 与 ExpansionService 共用同一份实现 */
+    private final ProgramStructureSupport structureSupport;
 
     // ==================================================================
     // 创建
@@ -431,7 +430,7 @@ public class ProgramService {
      * 但每次点号都可能是一次数据库查询。
      */
     public ProgramDetailResponse detail(Long userId, Long programId) {
-        Program program = loadOwned(userId, programId);
+        Program program = structureSupport.loadOwned(userId, programId);
 
         // 周
         List<WeekTemplate> weeks = weekTemplateMapper.selectList(
@@ -471,8 +470,8 @@ public class ProgramService {
         //
         // 这不只是语法限制：**可变变量被 lambda 捕获本身就有风险**——
         // lambda 执行时机不确定，读到哪个版本的值不好推理。
-        final Map<Long, List<PrescribedSet>> setsByExercise = loadSets(allPrescriptions);
-        final Map<Long, Exercise> exercisesById = loadExercises(allPrescriptions);
+        final Map<Long, List<PrescribedSet>> setsByExercise = structureSupport.loadSets(allPrescriptions);
+        final Map<Long, Exercise> exercisesById = structureSupport.loadExercises(allPrescriptions);
 
         // ---------- 在内存里组装 ----------
         List<ProgramDetailResponse.DayItem> dayItems = new ArrayList<>(days.size());
@@ -480,7 +479,7 @@ public class ProgramService {
             List<PrescribedExercise> prescriptions =
                     byDay.getOrDefault(day.getId(), List.of());
 
-            List<ProgramDetailResponse.PrescriptionItem> items = sortPrescriptions(prescriptions)
+            List<ProgramDetailResponse.PrescriptionItem> items = structureSupport.sortPrescriptions(prescriptions)
                     .stream()
                     .map(p -> {
                         Exercise e = exercisesById.get(p.getExerciseId());
@@ -523,7 +522,7 @@ public class ProgramService {
      */
     @Transactional
     public void updateMeta(Long userId, Long programId, String name, String description) {
-        Program program = loadOwned(userId, programId);
+        Program program = structureSupport.loadOwned(userId, programId);
 
         if (!program.isEditable()) {
             throw new BizException(ErrorCode.PROGRAM_ALREADY_STARTED,
@@ -547,7 +546,7 @@ public class ProgramService {
      */
     @Transactional
     public void changeStatus(Long userId, Long programId, ProgramStatus target) {
-        Program program = loadOwned(userId, programId);
+        Program program = structureSupport.loadOwned(userId, programId);
 
         if (target == ProgramStatus.ARCHIVED) {
             throw new BizException(ErrorCode.FORBIDDEN, "归档由版本化流程触发，不能直接设置");
@@ -570,7 +569,7 @@ public class ProgramService {
      */
     @Transactional
     public void delete(Long userId, Long programId) {
-        Program program = loadOwned(userId, programId);
+        Program program = structureSupport.loadOwned(userId, programId);
 
         // 级联删除（这里是物理删除子表，主表走逻辑删除）
         //
@@ -588,20 +587,6 @@ public class ProgramService {
     // ==================================================================
     // 内部方法
     // ==================================================================
-
-    /**
-     * 加载属于该用户的计划。
-     *
-     * <p>不满足条件统一抛 404（而不是 403）——理由同动作库：
-     * 不泄露「这个 id 存在」。
-     */
-    private Program loadOwned(Long userId, Long programId) {
-        Program program = programMapper.selectById(programId);
-        if (program == null || !program.isOwnedBy(userId)) {
-            throw new BizException(ErrorCode.PROGRAM_NOT_FOUND);
-        }
-        return program;
-    }
 
     /**
      * 结构校验。
@@ -722,94 +707,6 @@ public class ProgramService {
             throw new BizException(ErrorCode.SUPERSET_GROUP_INVALID,
                     "非超级组动作不应指定组内顺序");
         }
-    }
-
-    /**
-     * 处方动作的排序规则。
-     *
-     * <p><b>排序键的定义</b>：
-     * <pre>
-     *   普通动作   → 自己的 orderIndex
-     *   超级组成员 → 组内**最小的** orderIndex
-     * </pre>
-     * 组内再按 {@code orderInGroup} 排。
-     *
-     * <p><b>⚠️ 这里踩过一个坑</b>：最初的实现是「有超级组的排在前面」，
-     * 结果破坏了对 {@code orderIndex} 的尊重——
-     *
-     * <pre>
-     *   用户设置：1.卧推(普通)  2.划船(超级组)  3.深蹲(超级组)  4.硬拉(普通)
-     *   错误排序：划船, 深蹲, 卧推, 硬拉        ← 超级组被提到了最前面
-     *   正确排序：卧推, 划船, 深蹲, 硬拉
-     * </pre>
-     *
-     * <p>根源是把「分组」和「排序」混为一谈：超级组影响的是
-     * **执行节奏**（组内不休息），不是**在训练日里的位置**。
-     * 位置仍然由 orderIndex 决定。
-     *
-     * <p><b>为什么排序放在服务端而不是让前端做</b>：
-     * 两端（Flutter App 和 Vue Web）都要展示同样的顺序。
-     * 规则放服务端，只实现一次；放前端就要写两遍，且容易不一致。
-     */
-    private List<PrescribedExercise> sortPrescriptions(List<PrescribedExercise> prescriptions) {
-        // 先算出每个超级组的排序键：组内最小的 orderIndex
-        Map<Integer, Integer> groupSortKey = new HashMap<>();
-        for (PrescribedExercise p : prescriptions) {
-            if (p.isInSuperset()) {
-                groupSortKey.merge(p.getSupersetGroup(), p.getOrderIndex(), Math::min);
-            }
-        }
-
-        return prescriptions.stream()
-                .sorted(Comparator
-                        // 主键：普通动作用自己的 orderIndex，超级组用组内最小值
-                        .comparingInt((PrescribedExercise p) -> p.isInSuperset()
-                                ? groupSortKey.getOrDefault(p.getSupersetGroup(), Integer.MAX_VALUE)
-                                : p.getOrderIndex())
-                        // 次键：超级组内按组内顺序；普通动作为 0，不受影响
-                        .thenComparingInt(p -> p.getOrderInGroup() == null ? 0 : p.getOrderInGroup())
-                        // 末键：id 保证顺序稳定（相同键时不会在分页/多次请求间跳动）
-                        .thenComparing(PrescribedExercise::getId))
-                .toList();
-    }
-
-    /**
-     * 一次查出所有处方动作的逐组配置，按动作 id 分组。
-     *
-     * <p>空列表时直接返回空 Map——**不查库**。
-     * 不判空的话会生成 {@code WHERE id IN ()} 这种无意义的 SQL，
-     * 某些数据库会直接报语法错误。
-     */
-    private Map<Long, List<PrescribedSet>> loadSets(List<PrescribedExercise> prescriptions) {
-        if (prescriptions.isEmpty()) {
-            return Map.of();
-        }
-        List<Long> peIds = prescriptions.stream().map(PrescribedExercise::getId).toList();
-        return prescribedSetMapper.selectList(
-                        new LambdaQueryWrapper<PrescribedSet>()
-                                .in(PrescribedSet::getPrescribedExerciseId, peIds)
-                                .orderByAsc(PrescribedSet::getSetNumber))
-                .stream()
-                .collect(Collectors.groupingBy(PrescribedSet::getPrescribedExerciseId));
-    }
-
-    /**
-     * 一次查出所有涉及的动作（取名称、肌群用于展示）。
-     *
-     * <p>用 {@code selectList + in} 而不是已废弃的 {@code selectBatchIds}。
-     */
-    private Map<Long, Exercise> loadExercises(List<PrescribedExercise> prescriptions) {
-        if (prescriptions.isEmpty()) {
-            return Map.of();
-        }
-        List<Long> exerciseIds = prescriptions.stream()
-                .map(PrescribedExercise::getExerciseId)
-                .distinct()
-                .toList();
-        return exerciseMapper.selectList(
-                        new LambdaQueryWrapper<Exercise>().in(Exercise::getId, exerciseIds))
-                .stream()
-                .collect(Collectors.toMap(Exercise::getId, Function.identity()));
     }
 
     /** 统计某计划下的训练日数量（不含休息日） */

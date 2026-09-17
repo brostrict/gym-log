@@ -2,6 +2,7 @@ package com.gymlog.program;
 
 import com.gymlog.common.PageResponse;
 import com.gymlog.common.Result;
+import com.gymlog.program.dto.ExpandedWorkout;
 import com.gymlog.program.dto.ProgramCreateRequest;
 import com.gymlog.program.dto.ProgramDetailResponse;
 import com.gymlog.program.dto.ProgramFromTemplateRequest;
@@ -33,6 +34,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class ProgramController {
 
     private final ProgramService programService;
+    private final ExpansionService expansionService;
 
     /**
      * 创建计划（一次提交完整结构）。
@@ -95,6 +97,34 @@ public class ProgramController {
     public Result<ProgramDetailResponse> detail(@AuthenticationPrincipal Long userId,
                                                 @PathVariable Long id) {
         return Result.ok(programService.detail(userId, id));
+    }
+
+    /**
+     * 展开「第 N 周第 M 天具体练什么」。
+     *
+     * <p>这是**周期化展开算法**的出口：把「第 5 周 +5%」这样的修饰，
+     * 展开成每一组的具体目标（重量、次数、休息）。
+     *
+     * <p>请求示例：
+     * <pre>
+     *   GET /api/v1/programs/12/workouts/1?week=5
+     * </pre>
+     *
+     * <p><b>为什么 {@code week} 是可选的</b>：
+     * 不传表示「按基准值展开」，用于用户在计划编辑页预览
+     * 「这个训练日大致是什么样」——他此时不关心第几周。
+     *
+     * <p><b>为什么 day 放在路径里而 week 放在查询参数里</b>：
+     * 训练日是**资源的固有组成部分**（一个训练日就是一个资源），
+     * 而周是一个**筛选维度**——同一份训练日结构，第 5 周和第 6 周都适用。
+     * 路径表达层级归属，查询参数表达筛选，这是 REST 的通用约定。
+     */
+    @GetMapping("/{id}/workouts/{dayNumber}")
+    public Result<ExpandedWorkout> expandWorkout(@AuthenticationPrincipal Long userId,
+                                                 @PathVariable Long id,
+                                                 @PathVariable Integer dayNumber,
+                                                 @RequestParam(required = false) Integer week) {
+        return Result.ok(expansionService.expandDay(userId, id, week, dayNumber));
     }
 
     /**

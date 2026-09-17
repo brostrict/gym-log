@@ -16,10 +16,29 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p><b>重点验证枚举映射</b>：Java 枚举 ↔ 数据库 VARCHAR 的往返
  * 是这一步最容易出问题的地方——配错了往往不是编译错误，
  * 而是运行时读到 null 或抛 {@code IllegalArgumentException}。
+ *
+ * <h3>⚠️ 为什么测试数据的名字都带 {@value #TEST_PREFIX} 前缀</h3>
+ *
+ * <p>{@code exercise} 表上有唯一索引 {@code uk_exercise_user_name(user_id, name)}，
+ * 而 V5 已经把 90 个内置动作写进了库——里面就有「杠铃卧推」和「引体向上」。
+ *
+ * <p>这个测试最早写的时候还没有种子数据，直接用真实动作名做测试数据；
+ * 种子加进来之后，{@code user_id = 0} 的那条就撞了唯一索引，
+ * **两个测试从此一直是红的**。
+ *
+ * <p>更糟的是它红得很隐蔽：报错是 {@code DuplicateKeyException}，
+ * 看起来像「插入逻辑坏了」，而实际上插入逻辑完全正常，
+ * 是测试数据选得不合适。
+ *
+ * <p>教训：**测试数据不要用生产数据里可能出现的名字**。
+ * 加个前缀，测试才是自洽的——不必知道种子数据里有什么。
  */
 @SpringBootTest
 @Transactional
 class ExerciseMapperTest {
+
+    /** 测试数据前缀。保证与种子数据、以及其他测试的数据都不冲突 */
+    private static final String TEST_PREFIX = "[测试]";
 
     @Autowired
     private ExerciseMapper exerciseMapper;
@@ -30,7 +49,7 @@ class ExerciseMapperTest {
         // ---------- 1. 插入一个内置动作 ----------
         Exercise exercise = new Exercise();
         exercise.setUserId(Exercise.BUILT_IN_USER_ID);
-        exercise.setName("杠铃卧推");
+        exercise.setName(TEST_PREFIX + "杠铃卧推");
         exercise.setAlias("卧推,bench press");
         exercise.setPrimaryMuscle(MuscleGroup.CHEST);
         exercise.setSecondaryMuscles("SHOULDERS,ARMS");
@@ -56,7 +75,7 @@ class ExerciseMapperTest {
         assertThat(found.getMetricType()).isEqualTo(MetricType.WEIGHT_REPS);
 
         // 中文名称（数据库是 utf8mb4，中文往返必须无损）
-        assertThat(found.getName()).isEqualTo("杠铃卧推");
+        assertThat(found.getName()).isEqualTo(TEST_PREFIX + "杠铃卧推");
         assertThat(found.getAlias()).isEqualTo("卧推,bench press");
     }
 
@@ -65,7 +84,7 @@ class ExerciseMapperTest {
     void shouldRoundTripBwFactor() {
         Exercise pullUp = new Exercise();
         pullUp.setUserId(Exercise.BUILT_IN_USER_ID);
-        pullUp.setName("引体向上");
+        pullUp.setName(TEST_PREFIX + "引体向上");
         pullUp.setPrimaryMuscle(MuscleGroup.BACK);
         pullUp.setEquipment(Equipment.BODYWEIGHT);
         pullUp.setMovementPattern(MovementPattern.VERTICAL_PULL);
@@ -86,7 +105,7 @@ class ExerciseMapperTest {
         // 负重动作不需要 bw_factor，应该是 null
         Exercise benchPress = new Exercise();
         benchPress.setUserId(Exercise.BUILT_IN_USER_ID);
-        benchPress.setName("测试卧推");
+        benchPress.setName(TEST_PREFIX + "负重卧推");
         benchPress.setPrimaryMuscle(MuscleGroup.CHEST);
         benchPress.setEquipment(Equipment.BARBELL);
         benchPress.setMetricType(MetricType.WEIGHT_REPS);
@@ -102,7 +121,7 @@ class ExerciseMapperTest {
     void shouldDistinguishBuiltInFromCustom() {
         Exercise builtIn = new Exercise();
         builtIn.setUserId(Exercise.BUILT_IN_USER_ID);
-        builtIn.setName("深蹲");
+        builtIn.setName(TEST_PREFIX + "深蹲");
         builtIn.setPrimaryMuscle(MuscleGroup.LEGS);
         builtIn.setEquipment(Equipment.BARBELL);
         builtIn.setMetricType(MetricType.WEIGHT_REPS);
@@ -112,7 +131,7 @@ class ExerciseMapperTest {
 
         Exercise custom = new Exercise();
         custom.setUserId(999L);
-        custom.setName("我的自定义动作");
+        custom.setName(TEST_PREFIX + "我的自定义动作");
         custom.setPrimaryMuscle(MuscleGroup.LEGS);
         custom.setEquipment(Equipment.BODYWEIGHT);
         custom.setMetricType(MetricType.REPS_ONLY);
