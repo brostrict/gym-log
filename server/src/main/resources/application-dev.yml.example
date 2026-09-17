@@ -27,7 +27,11 @@ spring:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # SQL 日志走 SLF4J（Logback），不要用 StdOutImpl。
+    # StdOutImpl 直接写 System.out，绕过 Logback：
+    #   ① 不受 logging.charset.console 控制 —— 中文参数会乱码
+    #   ② 不受日志级别控制 —— 生产环境想关都关不掉
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   global-config:
     db-config:
       id-type: auto

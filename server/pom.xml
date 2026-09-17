@@ -51,6 +51,21 @@
         </dependency>
 
         <!--
+          只引 spring-security-crypto，不引完整的 starter-security。
+
+          为什么：密码加密只需要 BCryptPasswordEncoder，它在 crypto 这个独立小包里，
+          没有任何强制依赖。而完整的 starter-security 一旦引入，
+          Spring Security 会**默认锁住所有接口**并生成随机密码，
+          步骤 1.5/1.6 的接口就没法直接测了。
+
+          完整的 Security 在第 1.7/1.8 步再引入。
+        -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+
+        <!--
           Lombok：编译期生成 getter/setter/构造器/日志对象。
           只在编译期起作用，运行时不需要，所以标 optional，
           并在下面 spring-boot-maven-plugin 里排除，避免打进最终 jar。
@@ -79,6 +94,25 @@
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+            <version>3.5.17</version>
+        </dependency>
+
+        <!--
+          ⚠️ MyBatis-Plus 3.5.9 起，依赖 JSqlParser 的拦截器被**拆到了独立模块**。
+
+          分页插件 PaginationInnerInterceptor 就在其中——只引 starter 的话，
+          编译期直接报「cannot be resolved to a type」，
+          因为 mybatis-plus-extension 里已经不含这个类了。
+
+          JSqlParser 被拆出去的原因：它是个不小的第三方 SQL 解析库，
+          而多数项目只用基础 CRUD，不需要解析 SQL 语句。
+          拆开后，不用分页/多租户/动态表名的项目可以少引一个依赖。
+
+          本项目需要分页（列表接口都要），所以必须显式引入。
+        -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
             <version>3.5.17</version>
         </dependency>
 
@@ -131,6 +165,32 @@
                             <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
+                </configuration>
+            </plugin>
+
+            <!--
+              测试 JVM 也要指定 UTF-8。
+              上面 spring-boot-maven-plugin 的 jvmArguments 只对 `mvn spring-boot:run`
+              生效；`mvn test` 启动的是 surefire 另开的 JVM，需要单独配置。
+              不配的话，MyBatis 打印的 SQL 参数里中文会乱码——
+              因为 MyBatis 的 StdOutImpl 直接写 System.out，
+              绕过 Logback 的 logging.charset.console 设置。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!--
+                      测试 JVM 的默认字符集设为 UTF-8。
+                      Java 18 之前 file.encoding 跟随操作系统（中文 Windows 是 GBK），
+                      不设的话：读写文件时中文出错、new String(bytes) 得到乱码。
+
+                      注意 file.encoding **管不到 System.out** ——
+                      Windows 上 System.out 走平台编码，-Dsun.stdout.encoding 也压不住。
+                      所以日志输出走 Logback（logging.charset.console: UTF-8），
+                      不要用直接写 System.out 的日志实现（如 MyBatis 的 StdOutImpl）。
+                    -->
+                    <argLine>-Dfile.encoding=UTF-8</argLine>
                 </configuration>
             </plugin>
         </plugins>

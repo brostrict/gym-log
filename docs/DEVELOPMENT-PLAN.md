@@ -106,8 +106,8 @@
 | 1.1 | Spring Boot 项目骨架 | ✅ 完成 |
 | 1.2 | 数据库与 Flyway 迁移 | ✅ 完成 |
 | 1.3 | 统一响应与全局异常处理 | ✅ 完成 |
-| 1.4 | 用户实体与 Mapper | ⬜ |
-| 1.5 | 注册接口 | ⬜ |
+| 1.4 | 用户实体与 Mapper | ✅ 完成 |
+| 1.5 | 注册接口 | ✅ 完成 |
 | 1.6 | 登录接口与 JWT 签发 | ⬜ |
 | 1.7 | JwtAuthenticationFilter | ⬜ |
 | 1.8 | SecurityFilterChain 配置 | ⬜ |
@@ -294,27 +294,140 @@
 
 ---
 
-### 步骤 1.4 —— 用户实体与 Mapper
+### ✅ 步骤 1.4 —— 用户实体与 Mapper
 
 | 项 | 内容 |
 |---|---|
 | **目的** | 打通「Java 对象 ↔ 数据库表」 |
-| **产出** | `User` 实体、`UserMapper`、`UserMapper.xml`（如需） |
-| **知识点** | MyBatis-Plus 的 `BaseMapper`、`@TableName` / `@TableId`、驼峰与下划线映射 |
+| **产出** | `user/User.java`、`user/UserMapper.java`、`config/MybatisPlusConfig.java`、`UserMapperTest` |
+| **知识点** | `BaseMapper` 白拿的方法、`@TableName`/`@TableId`、驼峰↔下划线自动映射、逻辑删除、分页插件 |
 | **谁写** | 我 |
-| **验收** | 写一个临时测试方法，能按 id 查到步骤 1.2 手动插入的那条数据 |
+| **验收** | 集成测试通过，字段映射与数据库默认值均正确 |
+
+**完成记录（2026-09-17）**
+
+测试通过（`Tests run: 1, Failures: 0`），SQL 日志同时验证了三个机制：
+
+```sql
+-- ① 插入时只包含非 null 字段，其余交给数据库 DEFAULT
+INSERT INTO user ( email, password_hash, nickname, gender, birth_year, height_cm, goal, experience )
+VALUES ( ?,?,?,?,?,?,?,? )
+
+-- ② 逻辑删除自动生效：查询自动附加 AND deleted=0
+SELECT id,email,...,deleted FROM user WHERE id=? AND deleted=0
+
+-- ③ 数据库默认值经 ORM 往返正确
+Row: 1, ..., 1, 1, 1995, 175.5, MUSCLE_GAIN, INTERMEDIATE, kg, local, null, 0, ...
+                                        ↑ status=1  ↑ unit_pref=kg  ↑ provider=local
+```
+
+**踩坑记录**
+
+> 🔴 **坑 6：MyBatis-Plus 3.5.9 起分页插件被拆到独立模块**
+>
+> 只引 `mybatis-plus-spring-boot3-starter` 时，`PaginationInnerInterceptor`
+> **编译期就报 cannot be resolved**——因为 `mybatis-plus-extension` 里已经没有这个类了。
+>
+> 原因：分页插件依赖 **JSqlParser**（一个不小的第三方 SQL 解析库），
+> 而多数项目只用基础 CRUD。3.5.9 把它拆成独立模块，不用的项目可以少引一个依赖。
+>
+> 修法：额外引入 `com.baomidou:mybatis-plus-jsqlparser`（版本与 starter 对齐）。
+
+> ⚠️ **坑 7：SQL 日志中文乱码（未完全解决）**
+>
+> 现象：MyBatis 打印的 SQL 参数里中文显示为乱码。
+>
+> **根因链**：
+> 1. 原配置用 `StdOutImpl`，它**直接写 `System.out`，绕过 Logback** ——
+>    所以 `logging.charset.console: UTF-8` 对它完全无效
+> 2. 而 Windows 上 `System.out` 走**平台编码 GBK**，
+>    `-Dfile.encoding` 管不到它，`-Dsun.stdout.encoding` 也没压住
+>
+> **已做的改进**：改用 `Slf4jImpl`，SQL 日志走 Logback ——
+> 附带好处是有了级别控制、时间戳、Mapper 方法名，生产环境调成 info 就自动不打。
+>
+> **残余问题**：命令行输出仍是 GBK 字节。已用 `iconv` 严格验证——**按 GBK 解码完全正确**，
+> 说明**数据本身没有问题**。
+>
+> ✅ **2026-09-17 用户实测确认：IDEA 控制台中中文显示正常。** 结案。
+>
+> **教训**：这类问题的排查成本极高，且容易陷入「以为解决了其实没有」。
+> 判定方法应该是**直接看字节**（`xxd`）而不是看终端显示。
+
+**两个安全设计**（写在 `User` 实体里）
+
+| 字段 | 防护 | 防的是什么 |
+|---|---|---|
+| `passwordHash` | `@JsonIgnore` | 接口直接返回实体时，密码哈希泄露给前端 |
+| `passwordHash` | `@ToString.Exclude` | `log.info("user={}", user)` 把哈希写进日志 |
+
+第二条容易被忽略——**日志往往比数据库更容易被看到**（运维、日志平台、误提交的日志文件）。
+BCrypt 哈希可以离线暴力破解，不受登录接口限流约束，拿到哈希 ≈ 拿到一份可以慢慢猜的密码。
 
 ---
 
-### 步骤 1.5 —— 注册接口
+### ✅ 步骤 1.5 —— 注册接口
 
 | 项 | 内容 |
 |---|---|
 | **目的** | 能创建用户 |
-| **产出** | `RegisterRequest`（含校验注解）、`UserService.register`、`AuthController` |
-| **知识点** | `@Valid` + JSR-303 校验、**BCrypt 为什么不能用 MD5**（盐、计算成本）、邮箱唯一性检查的并发问题 |
+| **产出** | `dto/RegisterRequest`、`config/PasswordConfig`、`UserService`、`AuthController` |
+| **知识点** | `@Valid` + JSR-303、BCrypt 原理、**并发下的唯一性保证**、DTO 与实体的分离 |
 | **谁写** | 我 |
-| **验收** | POST `/api/v1/auth/register` 成功；重复邮箱返回明确的业务错误码；数据库里密码是 `$2a$...` 而非明文 |
+| **验收** | 正常注册成功；重复/大写邮箱被拒；参数校验生效；库中密码是哈希 |
+
+**完成记录（2026-09-17）**
+
+| 场景 | HTTP | 响应 |
+|---|---|---|
+| 正常注册 | 200 | `{"code":0,"data":6}` |
+| 重复邮箱 | **409** | `{"code":20001,"message":"该邮箱已被注册"}` |
+| **大写邮箱 `ALICE@Example.COM`** | **409** | 同样判为重复 —— 归一化生效 |
+| 邮箱格式错误 | 400 | `"邮箱格式不正确"` |
+| 密码太短（3 位） | 400 | `"密码长度需在 8-32 位之间"` |
+| 昵称为空 | 400 | `"昵称不能为空"` |
+
+数据库侧验证：
+
+```
+email = alice@example.com      ← 已转小写
+password_hash = $2a$10$...     ← BCrypt cost 10，长度 60
+库中无明文密码 ✓
+```
+
+**核心设计：邮箱唯一性的两层防护**
+
+```java
+// 第一层：应用层查重 —— 为了友好提示，覆盖 99% 的情况
+if (existsByEmail(email)) {
+    throw new BizException(EMAIL_ALREADY_EXISTS);
+}
+
+try {
+    userMapper.insert(user);
+} catch (DuplicateKeyException e) {
+    // 第二层：数据库唯一索引 —— 真正的保证
+    throw new BizException(EMAIL_ALREADY_EXISTS);
+}
+```
+
+> **为什么两层都要**：「查」和「插」之间存在时间窗——两个并发请求可能都查到「不存在」，然后都插入成功。
+> **应用层的「先查后插」永远无法保证唯一性，真正的保证只能来自数据库唯一索引。**
+> 这不是代码写得不严谨，是并发场景的固有性质。
+
+**为什么只引 `spring-security-crypto` 不引完整 starter**
+
+密码加密只需要 `BCryptPasswordEncoder`（在 crypto 这个零依赖小包里）。完整 starter 一旦引入，Spring Security **默认锁住所有接口**并生成随机密码，1.5/1.6 的接口就没法直接测了。完整的 Security 在 1.7/1.8 引入。
+
+**为什么 Service 不写接口**
+
+国内常见 `UserService` 接口 + `UserServiceImpl` 实现。本项目不这么做——只有一个实现时，接口是纯负担（改签名动两处、IDE 多跳一次），且没有实际收益。Spring 官方团队近年也明确建议不要写没有必要的接口。**这个取舍面试可能被问。**
+
+**已知限制**
+
+参数校验失败时**只返回第一条错误**。实测「全空」请求返回的是「密码长度需在 8-32 位之间」而非「邮箱不能为空」——因为字段错误的顺序不保证。
+
+这是有意取舍（移动端用 Toast 展示，一次给一条更清楚）。若将来需要表单逐字段高亮，给 `Result` 加 `errors` 字段返回 `Map<字段名, 错误信息>` 即可。
 
 ---
 
