@@ -4,6 +4,7 @@ import com.gymlog.common.PageResponse;
 import com.gymlog.common.Result;
 import com.gymlog.program.dto.ProgramCreateRequest;
 import com.gymlog.program.dto.ProgramDetailResponse;
+import com.gymlog.program.dto.ProgramFromTemplateRequest;
 import com.gymlog.program.dto.ProgramSummaryResponse;
 import com.gymlog.program.dto.ProgramUpdateRequest;
 import jakarta.validation.Valid;
@@ -43,6 +44,30 @@ public class ProgramController {
     public Result<Long> create(@AuthenticationPrincipal Long userId,
                                @Valid @RequestBody ProgramCreateRequest request) {
         return Result.ok(programService.create(userId, request));
+    }
+
+    /**
+     * 从内置模板创建计划。
+     *
+     * <p>请求示例：
+     * <pre>
+     *   POST /api/v1/programs/from-template
+     *   { "templateCode": "PPL_3DAY", "startDate": "2026-09-21" }
+     * </pre>
+     *
+     * <p>创建出来的计划是**模板的一份完整拷贝**——之后用户改它，
+     * 不会影响模板，也不会影响别人从同一模板创建的计划。
+     *
+     * <p><b>为什么路径是 {@code /from-template} 而不是
+     * {@code POST /programs?templateCode=xxx}</b>：
+     * 两者的请求体结构完全不同（一个是完整嵌套结构，一个只有三个字段）。
+     * 用同一个路径靠参数区分，会让接口语义模糊，
+     * 且 Swagger 上也无法清晰展示两种不同的 body。
+     */
+    @PostMapping("/from-template")
+    public Result<Long> createFromTemplate(@AuthenticationPrincipal Long userId,
+                                           @Valid @RequestBody ProgramFromTemplateRequest request) {
+        return Result.ok(programService.createFromTemplate(userId, request));
     }
 
     /**

@@ -43,6 +43,7 @@
 | 2.6 | 计划相关表设计（5 张表） | 2026-09-17 | ✅ |
 | 2.8 | 计划 CRUD 接口 | 2026-09-17 | ✅ |
 | 2.9 | 内置计划模板（6 个） | 2026-09-17 | ✅ |
+| 2.10 | 从模板创建计划 | 2026-09-17 | ✅ |
 
 ---
 
@@ -1963,6 +1964,106 @@ WHERE jt.exercise_name NOT IN (SELECT name FROM exercise WHERE user_id = 0);
 
 > 第二条的断言用了「收集所有缺失项再一次性断言」而不是「遇到第一个就失败」——
 > 修的时候能一次改完，不用反复跑。
+
+---
+
+## 步骤 2.10 —— 从模板创建计划 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+program/
+├── ProgramService.java                 +createFromTemplate / 名称解析
+├── ProgramController.java              +POST /programs/from-template
+├── ProgramTemplateController.java      GET /program-templates（列表/详情）
+└── dto/
+    ├── ProgramFromTemplateRequest.java
+    └── ProgramTemplateResponse.java
+```
+
+### 验证结果
+
+| 模板 | 创建结果 | 周数 | 训练日 | 动作数 |
+|---|---|---|---|---|
+| `STRONGLIFTS_5X5` | 200, id=3 | 12 | 2 | 6 |
+| `PPL_3DAY` | 200, id=4 | 8 | 3 | 15 |
+| `UPPER_LOWER_4DAY` | 200, id=5 | 8 | 4 | 22 |
+| `BODYWEIGHT_3DAY` | 200, id=6 | 8 | 3 | 15 |
+| `BODYWEIGHT_BEGINNER` | 200, id=7 | 4 | 2 | 8 |
+| `PPL_6DAY` | 200, id=8 | 8 | 6 | 25 |
+| 非法模板编码 | **404** | — | — | — |
+
+**动作数逐个核对过**，与模板定义完全一致（如 PPL_3DAY = 5+5+5 = 15）。
+详情接口返回的每个动作都同时有 `exerciseName` 和 `exerciseId`——
+**名称→id 解析成功**。
+
+### 核心工作：名称 → id 的解析
+
+模板里存的是动作**名称**（因为 id 各环境不一致），入库需要 **id**。
+这层转换是这一步唯一的额外工作。
+
+**两个实现要点**：
+
+**① 一次 IN 查询，不逐个查**
+
+```java
+// 先从模板 JSON 里收集所有不重复的动作名称
+Set<String> names = collectNames(root);
+// 一次查出
+List<Exercise> exercises = exerciseMapper.selectList(
+    ... .in(Exercise::getName, names));
+```
+
+一个模板引用 10–20 个不重复的动作，逐个查就是 10–20 次数据库往返。
+
+**② 缺失时列出全部，不遇到第一个就抛**
+
+```java
+List<String> missing = names.stream().filter(n -> !result.containsKey(n)).toList();
+if (!missing.isEmpty()) {
+    log.error("模板引用的动作不存在 | template={} | missing={}", templateCode, missing);
+    throw new BizException(..., "模板数据不完整，缺少动作：" + String.join("、", missing));
+}
+```
+
+**一次列出全部缺失项，运维一次能修完**，不用改一个跑一次。
+
+### 复用 create() 而不是重写
+
+创建逻辑走的是同一个 `create()`——校验、事务、级联插入完全一样。
+
+**复制一份的话，将来改 `create` 就极可能忘了同步改这里**，
+然后两个入口的行为慢慢分叉。
+
+### 接口设计：为什么用 `/from-template` 而不是查询参数
+
+```
+POST /api/v1/programs/from-template   body: {templateCode, name, startDate}
+POST /api/v1/programs                 body: {嵌套的完整结构}
+```
+
+两者的**请求体结构完全不同**（一个是三个字段，一个是五层嵌套）。
+用同一路径靠参数区分会让接口语义模糊，Swagger 上也无法清晰展示两种 body。
+
+### 模板列表不返回 structure
+
+`ProgramTemplateResponse` **刻意不含 `structure` 字段**——
+那是完整的嵌套结构，一个模板上百条记录。
+
+列表页只需要「够用户判断要不要选它」的信息（目标、水平、频率、器械）。
+结构在点「使用这个模板」时才需要，而那时客户端根本不需要拿到它。
+
+**实测**：6 个模板的列表响应只有 **2715 字节**。
+
+### 一个设计上的取舍：创建时先原样落库
+
+用户想改结构（增删动作、调组数）是**创建之后**的事，创建时先原样拷贝模板。
+
+这样有两个好处：
+1. 用户能看到模板的原始样子，知道自己在改什么
+2. 创建逻辑不必处理「部分覆盖模板」的复杂情况
 
 ---
 

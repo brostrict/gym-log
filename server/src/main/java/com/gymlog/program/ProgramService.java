@@ -3,6 +3,9 @@ package com.gymlog.program;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gymlog.common.BizException;
 import com.gymlog.common.ErrorCode;
 import com.gymlog.exercise.Exercise;
@@ -10,6 +13,7 @@ import com.gymlog.exercise.ExerciseMapper;
 import com.gymlog.exercise.ExerciseService;
 import com.gymlog.program.dto.ProgramCreateRequest;
 import com.gymlog.program.dto.ProgramDetailResponse;
+import com.gymlog.program.dto.ProgramFromTemplateRequest;
 import com.gymlog.program.dto.ProgramSummaryResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +26,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -40,6 +45,9 @@ public class ProgramService {
     private final PrescribedSetMapper prescribedSetMapper;
     private final ExerciseMapper exerciseMapper;
     private final ExerciseService exerciseService;
+    private final ProgramTemplateMapper templateMapper;
+    /** 解析模板的 JSON 结构。复用 Spring 容器里那一个，不用自己 new */
+    private final ObjectMapper objectMapper;
 
     // ==================================================================
     // 创建
@@ -165,6 +173,216 @@ public class ProgramService {
                 request.days() == null ? 0 : request.days().size());
 
         return program.getId();
+    }
+
+    /**
+     * 从内置模板创建计划。
+     *
+     * <p><b>流程</b>：
+     * <pre>
+     *   1. 按 code 加载模板（必须是上架状态）
+     *   2. 解析 structure JSON
+     *   3. 把 JSON 里的「动作名称」解析成「动作 id」   ← 关键步骤
+     *   4. 组装成 ProgramCreateRequest
+     *   5. 调用 create()——复用已有的嵌套创建逻辑
+     * </pre>
+     *
+     * <p><b>第 5 步复用 create 而不是重写一遍</b>：
+     * 校验、事务、级联插入的逻辑完全一样。
+     * 复制一份的话，将来改 create 就忘不了同步改这里。
+     *
+     * <p><b>第 3 步是唯一的额外工作</b>：模板里存名称是因为动作 id
+     * 各环境不一致，但入库需要 id。这层转换必须有，
+     * 而且要**明确报错**——名称对不上时告诉用户是哪个动作，
+     * 而不是抛一个笼统的「创建失败」。
+     */
+    @Transactional
+    public Long createFromTemplate(Long userId, ProgramFromTemplateRequest request) {
+        ProgramTemplate template = templateMapper.selectOne(
+                new LambdaQueryWrapper<ProgramTemplate>()
+                        .eq(ProgramTemplate::getCode, request.templateCode())
+                        .eq(ProgramTemplate::getStatus, ProgramTemplate.STATUS_PUBLISHED));
+
+        if (template == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "计划模板不存在或已下架");
+        }
+
+        ProgramCreateRequest createRequest = buildRequestFromTemplate(
+                template,
+                request.name() == null || request.name().isBlank() ? template.getName() : request.name().trim(),
+                request.startDate());
+
+        Long programId = create(userId, createRequest);
+
+        // 记录来源模板。便于统计「哪个模板最受欢迎」，
+        // 也便于将来做「以模板最新版重新开始」。
+        Program update = new Program();
+        update.setId(programId);
+        update.setTemplateCode(template.getCode());
+        programMapper.updateById(update);
+
+        log.info("从模板创建计划 | userId={} | programId={} | template={}",
+                userId, programId, template.getCode());
+
+        return programId;
+    }
+
+    /**
+     * 把模板的 JSON 结构转成创建请求，同时解析动作名称。
+     *
+     * <p><b>名称解析做了缓存</b>：同一个动作在模板里可能出现多次
+     * （比如深蹲在 A 日和 B 日都有），查一次库就够。
+     */
+    private ProgramCreateRequest buildRequestFromTemplate(ProgramTemplate template,
+                                                          String planName,
+                                                          java.time.LocalDate startDate) {
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(template.getStructure());
+        } catch (JsonProcessingException e) {
+            // 模板是种子数据，解析失败说明数据有问题，不是用户输入错误。
+            // 记 error 日志便于运维定位，但对用户只能给笼统提示。
+            log.error("模板结构 JSON 解析失败 | template={}", template.getCode(), e);
+            throw new BizException(ErrorCode.SYSTEM_ERROR, "模板数据异常，请联系管理员");
+        }
+
+        // ---------- 解析所有用到的动作名称 → id ----------
+        Map<String, Long> exerciseIdByName = resolveExerciseIds(root, template.getCode());
+
+        // ---------- 组装请求 ----------
+        List<ProgramCreateRequest.WeekRequest> weeks = new ArrayList<>();
+        for (JsonNode w : root.path("weeks")) {
+            weeks.add(new ProgramCreateRequest.WeekRequest(
+                    w.path("weekNumber").asInt(),
+                    w.hasNonNull("sessionsPerWeek") ? w.get("sessionsPerWeek").asInt() : null,
+                    w.hasNonNull("weightAdjustPct") ? w.get("weightAdjustPct").decimalValue() : null,
+                    w.hasNonNull("setAdjust") ? w.get("setAdjust").asInt() : null,
+                    w.hasNonNull("isDeload") && w.get("isDeload").asBoolean(),
+                    w.hasNonNull("note") ? w.get("note").asText() : null
+            ));
+        }
+
+        List<ProgramCreateRequest.DayRequest> days = new ArrayList<>();
+        for (JsonNode d : root.path("days")) {
+            List<ProgramCreateRequest.PrescriptionRequest> exercises = new ArrayList<>();
+
+            for (JsonNode e : d.path("exercises")) {
+                String exerciseName = e.path("exerciseName").asText();
+                Long exerciseId = exerciseIdByName.get(exerciseName);
+                if (exerciseId == null) {
+                    // 理论上不会走到——ProgramTemplateTest 已经保证名称都存在。
+                    // 但如果管理员在运行期改了动作名称，就会到这里。
+                    throw new BizException(ErrorCode.SYSTEM_ERROR,
+                            "模板引用的动作「" + exerciseName + "」不存在，请联系管理员");
+                }
+                exercises.add(buildPrescription(e, exerciseId));
+            }
+
+            days.add(new ProgramCreateRequest.DayRequest(
+                    d.path("dayNumber").asInt(),
+                    d.path("name").asText(),
+                    d.hasNonNull("isRestDay") && d.get("isRestDay").asBoolean(),
+                    d.hasNonNull("note") ? d.get("note").asText() : null,
+                    exercises
+            ));
+        }
+
+        return new ProgramCreateRequest(
+                planName,
+                template.getDescription(),
+                template.getTotalWeeks(),
+                startDate,
+                weeks,
+                days
+        );
+    }
+
+    /** 从模板 JSON 里收集所有动作名称，一次查出对应的 id */
+    private Map<String, Long> resolveExerciseIds(JsonNode root, String templateCode) {
+        // 用 LinkedHashSet 保序，便于出错时输出的顺序稳定
+        Set<String> names = new java.util.LinkedHashSet<>();
+        for (JsonNode day : root.path("days")) {
+            for (JsonNode ex : day.path("exercises")) {
+                if (ex.hasNonNull("exerciseName")) {
+                    names.add(ex.get("exerciseName").asText());
+                }
+            }
+        }
+
+        if (names.isEmpty()) {
+            return Map.of();
+        }
+
+        // 一次 IN 查询解决所有名称，而不是逐个查。
+        // 一个模板引用 10-20 个不重复的动作，逐个查就是 10-20 次往返。
+        List<Exercise> exercises = exerciseMapper.selectList(
+                new LambdaQueryWrapper<Exercise>()
+                        .eq(Exercise::getUserId, Exercise.BUILT_IN_USER_ID)
+                        .in(Exercise::getName, names));
+
+        Map<String, Long> result = new java.util.HashMap<>();
+        for (Exercise e : exercises) {
+            result.put(e.getName(), e.getId());
+        }
+
+        // 报告缺失的动作。一次性列出全部而不是遇到第一个就抛——
+        // 便于运维一次修完。
+        List<String> missing = names.stream().filter(n -> !result.containsKey(n)).toList();
+        if (!missing.isEmpty()) {
+            log.error("模板引用的动作不存在 | template={} | missing={}", templateCode, missing);
+            throw new BizException(ErrorCode.SYSTEM_ERROR,
+                    "模板数据不完整，缺少动作：" + String.join("、", missing));
+        }
+
+        return result;
+    }
+
+    /** 把一个模板里的动作条目转成创建请求 */
+    private ProgramCreateRequest.PrescriptionRequest buildPrescription(JsonNode e, Long exerciseId) {
+        List<ProgramCreateRequest.SetRequest> sets = new ArrayList<>();
+        for (JsonNode s : e.path("sets")) {
+            sets.add(new ProgramCreateRequest.SetRequest(
+                    s.path("setNumber").asInt(),
+                    s.hasNonNull("setType")
+                            ? com.gymlog.training.SetType.valueOf(s.get("setType").asText())
+                            : null,
+                    intOrNull(s, "targetReps"),
+                    intOrNull(s, "targetRepsMin"),
+                    intOrNull(s, "targetRepsMax"),
+                    decimalOrNull(s, "targetWeight"),
+                    decimalOrNull(s, "targetWeightPct"),
+                    decimalOrNull(s, "targetRpe"),
+                    intOrNull(s, "restSec"),
+                    s.hasNonNull("note") ? s.get("note").asText() : null
+            ));
+        }
+
+        return new ProgramCreateRequest.PrescriptionRequest(
+                exerciseId,
+                e.path("orderIndex").asInt(),
+                intOrNull(e, "supersetGroup"),
+                intOrNull(e, "orderInGroup"),
+                e.path("targetSets").asInt(),
+                intOrNull(e, "targetRepsMin"),
+                intOrNull(e, "targetRepsMax"),
+                e.hasNonNull("restSec") ? e.get("restSec").asInt() : 90,
+                e.hasNonNull("targetWeightType")
+                        ? TargetWeightType.valueOf(e.get("targetWeightType").asText())
+                        : TargetWeightType.ABSOLUTE,
+                decimalOrNull(e, "targetWeight"),
+                decimalOrNull(e, "targetWeightPct"),
+                decimalOrNull(e, "targetRpe"),
+                e.hasNonNull("note") ? e.get("note").asText() : null,
+                sets
+        );
+    }
+
+    private Integer intOrNull(JsonNode node, String field) {
+        return node.hasNonNull(field) ? node.get(field).asInt() : null;
+    }
+
+    private java.math.BigDecimal decimalOrNull(JsonNode node, String field) {
+        return node.hasNonNull(field) ? node.get(field).decimalValue() : null;
     }
 
     // ==================================================================
