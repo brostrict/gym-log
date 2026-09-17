@@ -14,6 +14,7 @@ import com.gymlog.exercise.ExerciseService;
 import com.gymlog.program.dto.ProgramCreateRequest;
 import com.gymlog.program.dto.ProgramDetailResponse;
 import com.gymlog.program.dto.ProgramFromTemplateRequest;
+import com.gymlog.program.dto.ProgramStructureRequest;
 import com.gymlog.program.dto.ProgramSummaryResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -70,7 +71,7 @@ public class ProgramService {
     public Long create(Long userId, ProgramCreateRequest request) {
         // ---------- 0. 先做整体校验 ----------
         // 放在任何写库操作之前——尽早失败，避免白做一堆插入再回滚
-        validateStructure(request);
+        validateStructure(request.weeks(), request.days());
 
         // ---------- 1. 计划 ----------
         Program program = new Program();
@@ -89,11 +90,38 @@ public class ProgramService {
         program.setRootId(program.getId());
         programMapper.updateById(program);
 
-        // ---------- 2. 周结构 ----------
-        if (!CollectionUtils.isEmpty(request.weeks())) {
-            for (ProgramCreateRequest.WeekRequest w : request.weeks()) {
+        // ---------- 2. 周结构 + 训练日 ----------
+        insertStructure(userId, program.getId(), request.weeks(), request.days());
+
+        log.info("创建计划 | userId={} | programId={} | name={} | 周数={} | 训练日={}",
+                userId, program.getId(), program.getName(),
+                request.weeks() == null ? 0 : request.weeks().size(),
+                request.days() == null ? 0 : request.days().size());
+
+        return program.getId();
+    }
+
+    /**
+     * 把周与训练日写进库里 —— **创建和结构编辑共用这一份**。
+     *
+     * <p>抽出来的理由很直接：这两条路径要写的记录完全一样
+     * （周 → 训练日 → 动作 → 逐组），只有「之前有没有旧数据」不同。
+     * 复制一份的话，将来加一个字段（比如动作的「组间休息提示音」）
+     * 就得记住改两个地方，而**漏改一边不会有任何报错**，
+     * 只会让「创建的计划」和「编辑过的计划」行为不一致。
+     *
+     * <p>⚠️ 调用方负责：① 已校验过结构；② 已清空旧结构（编辑路径）。
+     */
+    private void insertStructure(Long userId,
+                                 Long programId,
+                                 List<ProgramCreateRequest.WeekRequest> weeks,
+                                 List<ProgramCreateRequest.DayRequest> days) {
+
+        // ---------- 周结构 ----------
+        if (!CollectionUtils.isEmpty(weeks)) {
+            for (ProgramCreateRequest.WeekRequest w : weeks) {
                 WeekTemplate week = new WeekTemplate();
-                week.setProgramId(program.getId());
+                week.setProgramId(programId);
                 week.setWeekNumber(w.weekNumber());
                 week.setSessionsPerWeek(w.sessionsPerWeek() == null ? 3 : w.sessionsPerWeek());
                 week.setWeightAdjustPct(w.weightAdjustPct());
@@ -104,74 +132,153 @@ public class ProgramService {
             }
         }
 
-        // ---------- 3. 训练日 → 动作 → 逐组 ----------
-        if (!CollectionUtils.isEmpty(request.days())) {
-            for (ProgramCreateRequest.DayRequest d : request.days()) {
-                DayTemplate day = new DayTemplate();
-                day.setProgramId(program.getId());
-                day.setDayNumber(d.dayNumber());
-                day.setName(d.name().trim());
-                day.setIsRestDay(Boolean.TRUE.equals(d.isRestDay()) ? 1 : 0);
-                day.setNote(d.note());
-                dayTemplateMapper.insert(day);
+        // ---------- 训练日 → 动作 → 逐组 ----------
+        if (CollectionUtils.isEmpty(days)) {
+            return;
+        }
 
-                // 休息日不该有动作
-                if (day.isRest() || CollectionUtils.isEmpty(d.exercises())) {
-                    continue;
-                }
+        for (ProgramCreateRequest.DayRequest d : days) {
+            DayTemplate day = new DayTemplate();
+            day.setProgramId(programId);
+            day.setDayNumber(d.dayNumber());
+            day.setName(d.name().trim());
+            day.setIsRestDay(Boolean.TRUE.equals(d.isRestDay()) ? 1 : 0);
+            day.setNote(d.note());
+            dayTemplateMapper.insert(day);
 
-                for (ProgramCreateRequest.PrescriptionRequest p : d.exercises()) {
-                    // ⚠️ 校验动作可见性。
-                    // 用户可能传入一个**别人的自定义动作 id**——
-                    // 不校验的话，他的计划里就会出现别人私有的动作。
-                    exerciseService.getVisibleById(userId, p.exerciseId());
+            // 休息日不该有动作
+            if (day.isRest() || CollectionUtils.isEmpty(d.exercises())) {
+                continue;
+            }
 
-                    PrescribedExercise pe = new PrescribedExercise();
-                    pe.setDayTemplateId(day.getId());
-                    pe.setExerciseId(p.exerciseId());
-                    pe.setOrderIndex(p.orderIndex());
-                    pe.setSupersetGroup(p.supersetGroup());
-                    pe.setOrderInGroup(p.orderInGroup());
-                    pe.setTargetSets(p.targetSets());
-                    pe.setTargetRepsMin(p.targetRepsMin());
-                    pe.setTargetRepsMax(p.targetRepsMax());
-                    pe.setRestSec(p.restSec());
-                    pe.setTargetWeightType(p.targetWeightType());
-                    pe.setTargetWeight(p.targetWeight());
-                    pe.setTargetWeightPct(p.targetWeightPct());
-                    pe.setTargetRpe(p.targetRpe());
-                    pe.setNote(p.note());
-                    prescribedExerciseMapper.insert(pe);
+            for (ProgramCreateRequest.PrescriptionRequest p : d.exercises()) {
+                // ⚠️ 校验动作可见性。
+                // 用户可能传入一个**别人的自定义动作 id**——
+                // 不校验的话，他的计划里就会出现别人私有的动作。
+                //
+                // 编辑路径同样要校验：老计划里可能引用着一个
+                // 后来被删除/停用的自定义动作，直接原样写回就等于绕过了校验。
+                exerciseService.getVisibleById(userId, p.exerciseId());
 
-                    if (!CollectionUtils.isEmpty(p.sets())) {
-                        for (ProgramCreateRequest.SetRequest s : p.sets()) {
-                            PrescribedSet set = new PrescribedSet();
-                            set.setPrescribedExerciseId(pe.getId());
-                            set.setSetNumber(s.setNumber());
-                            set.setSetType(s.setType() == null
-                                    ? com.gymlog.training.SetType.WORKING
-                                    : s.setType());
-                            set.setTargetReps(s.targetReps());
-                            set.setTargetRepsMin(s.targetRepsMin());
-                            set.setTargetRepsMax(s.targetRepsMax());
-                            set.setTargetWeight(s.targetWeight());
-                            set.setTargetWeightPct(s.targetWeightPct());
-                            set.setTargetRpe(s.targetRpe());
-                            set.setRestSec(s.restSec());
-                            set.setNote(s.note());
-                            prescribedSetMapper.insert(set);
-                        }
+                PrescribedExercise pe = new PrescribedExercise();
+                pe.setDayTemplateId(day.getId());
+                pe.setExerciseId(p.exerciseId());
+                pe.setOrderIndex(p.orderIndex());
+                pe.setSupersetGroup(p.supersetGroup());
+                pe.setOrderInGroup(p.orderInGroup());
+                pe.setTargetSets(p.targetSets());
+                pe.setTargetRepsMin(p.targetRepsMin());
+                pe.setTargetRepsMax(p.targetRepsMax());
+                pe.setRestSec(p.restSec());
+                pe.setTargetWeightType(p.targetWeightType());
+                pe.setTargetWeight(p.targetWeight());
+                pe.setTargetWeightPct(p.targetWeightPct());
+                pe.setTargetRpe(p.targetRpe());
+                pe.setNote(p.note());
+                prescribedExerciseMapper.insert(pe);
+
+                if (!CollectionUtils.isEmpty(p.sets())) {
+                    for (ProgramCreateRequest.SetRequest s : p.sets()) {
+                        PrescribedSet set = new PrescribedSet();
+                        set.setPrescribedExerciseId(pe.getId());
+                        set.setSetNumber(s.setNumber());
+                        set.setSetType(s.setType() == null
+                                ? com.gymlog.training.SetType.WORKING
+                                : s.setType());
+                        set.setTargetReps(s.targetReps());
+                        set.setTargetRepsMin(s.targetRepsMin());
+                        set.setTargetRepsMax(s.targetRepsMax());
+                        set.setTargetWeight(s.targetWeight());
+                        set.setTargetWeightPct(s.targetWeightPct());
+                        set.setTargetRpe(s.targetRpe());
+                        set.setRestSec(s.restSec());
+                        set.setNote(s.note());
+                        prescribedSetMapper.insert(set);
                     }
                 }
             }
         }
+    }
 
-        log.info("创建计划 | userId={} | programId={} | name={} | 周数={} | 训练日={}",
-                userId, program.getId(), program.getName(),
+    /**
+     * 编辑计划结构 —— **全量替换**。
+     *
+     * <h3>流程</h3>
+     * <pre>
+     *   1. 归属校验（不通过 → 404，不泄露存在性）
+     *   2. 状态守卫（已归档的计划不能改）
+     *   3. 乐观锁（版本号对不上 → 409）
+     *   4. 结构校验（复用创建时那套跨记录规则）
+     *   5. 删掉全部旧结构 → 写入新结构
+     *   6. 版本号 +1
+     * </pre>
+     *
+     * <h3>为什么敢直接删了重建</h3>
+     *
+     * <p>因为**没有任何东西外键引用这些子记录**。
+     * 会话快照存的是处方**值**（重量、次数、休息），不是
+     * {@code prescribed_exercise_id}——这是 REQUIREMENTS 6.3 不变量 2
+     * 明确的实现约束。
+     *
+     * <p>如果哪天会话改成引用结构表，这个方法必须推倒重来，
+     * 改成基于 id 的增量更新。**这个前提要一直记着。**
+     *
+     * <h3>第 3 步的乐观锁不是可选项</h3>
+     *
+     * <p>全量替换下，两个设备同时编辑会**静默丢数据**：
+     * <pre>
+     *   手机加了深蹲 → 保存
+     *   电脑加了卧推 → 保存      ← 深蹲被整份覆盖，两边都没提示
+     * </pre>
+     * 带上 {@code expectedVersion} 后，第二个保存会拿到 409，
+     * 客户端刷新重来。
+     *
+     * <p>（用 {@code Program.version} 而不是新建一张锁表：
+     * 这个字段本来就在，之前一直没用上。乐观锁只需要一个单调递增的计数器。）
+     */
+    @Transactional
+    public ProgramDetailResponse updateStructure(Long userId,
+                                                 Long programId,
+                                                 ProgramStructureRequest request) {
+        Program program = structureSupport.loadOwned(userId, programId);
+
+        // ---------- 状态守卫 ----------
+        if (!program.isEditable()) {
+            throw new BizException(ErrorCode.PROGRAM_NOT_EDITABLE);
+        }
+
+        // ---------- 乐观锁 ----------
+        // 版本号为 null 的老数据按 1 处理，避免历史数据永远改不了
+        int currentVersion = program.getVersion() == null ? 1 : program.getVersion();
+        if (!Integer.valueOf(currentVersion).equals(request.expectedVersion())) {
+            throw new BizException(ErrorCode.PROGRAM_VERSION_CONFLICT,
+                    String.format("计划已被其他设备修改（当前版本 %d，你提交的是 %d），请刷新后重试",
+                            currentVersion, request.expectedVersion()));
+        }
+
+        // ---------- 结构校验 ----------
+        validateStructure(request.weeks(), request.days());
+
+        // ---------- 替换 ----------
+        // 先删后插，同一个事务。中间状态对外不可见。
+        cascadeDelete(programId);
+        insertStructure(userId, programId, request.weeks(), request.days());
+
+        // ---------- 版本 +1 ----------
+        Program update = new Program();
+        update.setId(programId);
+        update.setVersion(currentVersion + 1);
+        programMapper.updateById(update);
+
+        log.info("编辑计划结构 | userId={} | programId={} | {} -> {} | 周数={} | 训练日={}",
+                userId, programId, currentVersion, currentVersion + 1,
                 request.weeks() == null ? 0 : request.weeks().size(),
                 request.days() == null ? 0 : request.days().size());
 
-        return program.getId();
+        // 返回完整的新结构：全量替换后所有子记录的 id 都变了，
+        // 客户端手里那份缓存已经失效，必须拿到新的。
+        // 顺带把新版本号带回去，用户可以接着编辑不用重新 GET。
+        return detail(userId, programId);
     }
 
     /**
@@ -512,21 +619,24 @@ public class ProgramService {
     /**
      * 更新计划的基本信息（名称、说明）。
      *
-     * <p><b>⚠️ 这里刻意不支持改结构</b>（增删训练日、改动作）。
+     * <p><b>只改元信息，不动结构。</b>结构编辑走
+     * {@link #updateStructure}（`PUT /programs/{id}/structure`）。
      *
-     * <p>结构变更要走**版本化**路径（步骤 2.14）：
-     * 归档旧版本 + 新建新版本。原因见 REQUIREMENTS 6.3 的不变量 2——
-     * 直接改结构会让已完成的训练记录「追溯性地改变含义」。
+     * <p><b>为什么拆成两个接口而不是合成一个</b>：
+     * 全量替换结构要删掉上百条子记录再重建，还会让版本号 +1。
+     * 改个名字不该有这些副作用——改名是低频小操作，
+     * 不该触发整个计划的 id 洗牌，也不该让另一台设备上
+     * 正在编辑的计划突然变成冲突状态。
      *
-     * <p>本步骤先只支持元信息修改，结构编辑在 2.14 实现。
+     * <p>这个接口**不动版本号**：版本号只在结构变化时递增，
+     * 它标记的是「结构变了几次」，不是「记录改了几次」。
      */
     @Transactional
     public void updateMeta(Long userId, Long programId, String name, String description) {
         Program program = structureSupport.loadOwned(userId, programId);
 
         if (!program.isEditable()) {
-            throw new BizException(ErrorCode.PROGRAM_ALREADY_STARTED,
-                    "已归档或已完成的计划不能修改");
+            throw new BizException(ErrorCode.PROGRAM_NOT_EDITABLE);
         }
 
         Program update = new Program();
@@ -564,8 +674,10 @@ public class ProgramService {
     /**
      * 删除计划（逻辑删除，级联删除其下所有结构）。
      *
-     * <p><b>⚠️ 待办</b>：步骤 2.14 完成后要加「有训练记录引用时不能删」的检查。
+     * <p><b>⚠️ 待办（Phase 3 补）</b>：要加「有训练记录引用时不能删」的检查。
      * 现在删掉计划后，历史训练记录会指向一个已删除的计划。
+     * 检查本身很简单（数一下 session 表），但 session 表要到 Phase 3 才建，
+     * 现在写了也没法测——**没法测的代码等于没有代码**，所以留到那时一起做。
      */
     @Transactional
     public void delete(Long userId, Long programId) {
@@ -595,31 +707,32 @@ public class ProgramService {
      * 它们都是**跨记录**的约束——周序号不能重复、超级组必须成对出现。
      * JSR-303 注解作用在单个字段上，表达不了「这个列表里的值必须互不相同」。
      */
-    private void validateStructure(ProgramCreateRequest request) {
+    private void validateStructure(List<ProgramCreateRequest.WeekRequest> weeks,
+                                   List<ProgramCreateRequest.DayRequest> days) {
         // ---------- 周序号不重复 ----------
-        if (!CollectionUtils.isEmpty(request.weeks())) {
-            long distinct = request.weeks().stream()
+        if (!CollectionUtils.isEmpty(weeks)) {
+            long distinct = weeks.stream()
                     .map(ProgramCreateRequest.WeekRequest::weekNumber)
                     .distinct().count();
-            if (distinct != request.weeks().size()) {
+            if (distinct != weeks.size()) {
                 throw new BizException(ErrorCode.BAD_REQUEST, "周序号不能重复");
             }
         }
 
-        if (CollectionUtils.isEmpty(request.days())) {
+        if (CollectionUtils.isEmpty(days)) {
             return;
         }
 
         // ---------- 训练日序号不重复 ----------
-        long distinctDays = request.days().stream()
+        long distinctDays = days.stream()
                 .map(ProgramCreateRequest.DayRequest::dayNumber)
                 .distinct().count();
-        if (distinctDays != request.days().size()) {
+        if (distinctDays != days.size()) {
             throw new BizException(ErrorCode.BAD_REQUEST, "训练日序号不能重复");
         }
 
         // ---------- 每个训练日内的约束 ----------
-        for (ProgramCreateRequest.DayRequest day : request.days()) {
+        for (ProgramCreateRequest.DayRequest day : days) {
             if (Boolean.TRUE.equals(day.isRestDay())) {
                 if (!CollectionUtils.isEmpty(day.exercises())) {
                     throw new BizException(ErrorCode.BAD_REQUEST,

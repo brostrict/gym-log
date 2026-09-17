@@ -6,6 +6,7 @@ import com.gymlog.program.dto.ExpandedWorkout;
 import com.gymlog.program.dto.ProgramCreateRequest;
 import com.gymlog.program.dto.ProgramDetailResponse;
 import com.gymlog.program.dto.ProgramFromTemplateRequest;
+import com.gymlog.program.dto.ProgramStructureRequest;
 import com.gymlog.program.dto.ProgramSummaryResponse;
 import com.gymlog.program.dto.ProgramUpdateRequest;
 import jakarta.validation.Valid;
@@ -132,7 +133,9 @@ public class ProgramController {
      *
      * <p>用 PUT 而非 PATCH：整体替换语义，没传的字段会置空。
      *
-     * <p><b>不支持改结构</b>——结构变更走版本化路径（步骤 2.14）。
+     * <p><b>只改元信息，不动结构</b>——结构编辑走
+     * {@code PUT /programs/{id}/structure}。拆开的理由见
+     * {@code ProgramService.updateMeta} 的注释。
      */
     @PutMapping("/{id}")
     public Result<Void> update(@AuthenticationPrincipal Long userId,
@@ -140,6 +143,38 @@ public class ProgramController {
                                @Valid @RequestBody ProgramUpdateRequest request) {
         programService.updateMeta(userId, id, request.name(), request.description());
         return Result.ok();
+    }
+
+    /**
+     * 编辑计划结构 —— **全量替换**周与训练日。
+     *
+     * <p>请求示例：
+     * <pre>
+     *   PUT /api/v1/programs/12/structure
+     *   {
+     *     "expectedVersion": 3,
+     *     "weeks": [ { "weekNumber": 1, "weightAdjustPct": 0, "setAdjust": 0 } ],
+     *     "days":  [ { "dayNumber": 1, "name": "推日", "exercises": [ ... ] } ]
+     *   }
+     * </pre>
+     *
+     * <p><b>⚠️ 提交的是完整结构，不是增量。</b>
+     * 没出现在请求里的训练日会被删除。
+     * 客户端应把当前详情页的完整状态提交回来。
+     *
+     * <p><b>返回完整的新结构</b>（而不只是 204）：
+     * 全量替换后所有子记录的 id 都变了，客户端手里那份缓存已经失效。
+     * 返回体里也带着新的 {@code version}，用户可以连续编辑而不用重新 GET。
+     *
+     * <p><b>{@code expectedVersion} 必填</b>，用于乐观锁。
+     * 对不上返回 40003。详见 {@code ProgramStructureRequest}。
+     */
+    @PutMapping("/{id}/structure")
+    public Result<ProgramDetailResponse> updateStructure(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable Long id,
+            @Valid @RequestBody ProgramStructureRequest request) {
+        return Result.ok(programService.updateStructure(userId, id, request));
     }
 
     /**

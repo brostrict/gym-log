@@ -61,7 +61,27 @@ public enum ErrorCode {
 
     // ==================== 4xxxx 计划 ====================
     PROGRAM_NOT_FOUND(40001, "计划不存在", HttpStatus.NOT_FOUND),
-    PROGRAM_ALREADY_STARTED(40002, "计划已开始，不能直接修改，请创建新版本", HttpStatus.CONFLICT),
+    /**
+     * 计划处于不可编辑状态（已归档 / 已完成）。
+     *
+     * <p><b>原名 {@code PROGRAM_ALREADY_STARTED}（「计划已开始」），已更名。</b>
+     * 原语义来自「已开始的计划不能改，要建新版本」的版本化设计——
+     * 该设计已降级（见 REQUIREMENTS 6.3 不变量 2），
+     * 「已开始」现在**恰恰是可以改的**，而且改了不影响历史（靠会话快照）。
+     *
+     * <p>数字码 40002 保持不变，客户端不受影响。
+     * 但原来的文案「计划已开始，不能直接修改」会**主动误导用户**
+     * （让他以为开始的计划改不了），所以文案必须跟着改。
+     */
+    PROGRAM_NOT_EDITABLE(40002, "计划已归档或已完成，不能修改", HttpStatus.CONFLICT),
+
+    /**
+     * 乐观锁冲突：提交时带的版本号与服务端不一致。
+     *
+     * <p>含义是「你读到计划之后，有别人改过它」。
+     * 客户端应重新拉取详情再让用户重新提交，**不要自动重试**——
+     * 自动重试等于用旧数据覆盖别人的改动，正是这个检查要防的事。
+     */
     PROGRAM_VERSION_CONFLICT(40003, "计划已被其他设备修改，请刷新后重试", HttpStatus.CONFLICT),
     SUPERSET_GROUP_INVALID(40004, "超级组配置不合法", HttpStatus.BAD_REQUEST),
     PROGRAM_DAY_NOT_FOUND(40005, "训练日不存在", HttpStatus.NOT_FOUND),
