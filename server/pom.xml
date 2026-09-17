@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      继承 Spring Boot 父 POM。
+      它的核心作用是「依赖管理」（dependencyManagement）：统一规定了 Spring Boot
+      生态里几百个依赖该用哪个版本。所以我们自己的 <dependencies> 里
+      大部分都不用写 <version>，写了反而可能和 Boot 的版本冲突。
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.3</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.gymlog</groupId>
+    <artifactId>gym-log-server</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>gym-log-server</name>
+    <description>gym-log backend service</description>
+
+    <properties>
+        <!-- 本机只有 JDK 17；Spring Boot 3.x 要求 17+ -->
+        <java.version>17</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    </properties>
+
+    <dependencies>
+
+        <!--
+          starter-web：内嵌 Tomcat + Spring MVC + Jackson(JSON 序列化)
+          没有它，连一个 HTTP 接口都提供不了。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!--
+          starter-validation：提供 JSR-303 校验（@NotNull / @Email / @Size 等）
+          步骤 1.5 的注册接口会用到。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!--
+          Lombok：编译期生成 getter/setter/构造器/日志对象。
+          只在编译期起作用，运行时不需要，所以标 optional，
+          并在下面 spring-boot-maven-plugin 里排除，避免打进最终 jar。
+        -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          MySQL 驱动。注意不写 <version>：Spring Boot 的 BOM 已经管好了。
+          如果自己去 Maven Central 查"最新版"，会看到 26.x——那是给 Spring Boot 4 的。
+        -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!--
+          MyBatis-Plus：在 MyBatis 基础上封装了通用 CRUD。
+          注意 artifactId 是 mybatis-plus-spring-boot3-starter —— 专供 Spring Boot 3。
+          用错成 mybatis-plus-boot-starter 会启动失败（那是给 Boot 2 的）。
+        -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+            <version>3.5.17</version>
+        </dependency>
+
+        <!--
+          Flyway：数据库版本迁移。
+          它会在应用启动时扫描 db/migration/V*.sql，按版本号顺序执行，
+          并在 flyway_schema_history 表里记录执行状态。
+          好处：团队协作时数据库结构变更可追溯、可重放，不靠"我本地手动改了表"。
+
+          flyway-mysql 是 MySQL 的方言支持包，Flyway 10+ 之后必须单独引入。
+        -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+        </dependency>
+
+        <!--
+          starter-test：JUnit 5 + Mockito + AssertJ + Spring Test
+          scope=test 表示只在测试期可见，不打进最终产物。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!--
+                      强制 JVM 以 UTF-8 作为默认字符集。
+                      Java 18 之前 file.encoding 默认跟随操作系统（中文 Windows 是 GBK），
+                      会导致控制台中文日志乱码、读写文件时中文出错。
+                      这里设置后，`mvn spring-boot:run` 启动的进程也会带上。
+                    -->
+                    <jvmArguments>-Dfile.encoding=UTF-8</jvmArguments>
+                    <excludes>
+                        <!-- Lombok 只在编译期需要，从可执行 jar 里排除 -->
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

@@ -1,0 +1,66 @@
+# ============================================================
+# gym-log 后端 —— 主配置
+#
+# 这个文件是「公共配置」，任何环境都生效，会被提交到 git。
+# 数据库密码之类的敏感信息放在 application-dev.yml（已被 .gitignore 忽略）。
+#
+# Spring Boot 的配置加载顺序（后面的覆盖前面的）：
+#   application.yml  →  application-{profile}.yml  →  环境变量  →  命令行参数
+# ============================================================
+
+server:
+  port: 8080
+  # 接口统一前缀由 Controller 的 @RequestMapping 控制，不在这里配
+  # 这样 Swagger 上看到的路径和实际路径一致
+
+spring:
+  application:
+    name: gym-log-server
+
+  # ----------------------------------------------------------
+  # Profile 激活策略
+  #
+  # 这里用 default 而不是 active，两者区别很重要：
+  #
+  #   active: dev   —— 【强制】用 dev。哪怕生产环境设了
+  #                    SPRING_PROFILES_ACTIVE=prod 也会被这里覆盖，
+  #                    属于典型的"把开发配置带上生产"事故源头。
+  #
+  #   default: dev  —— 【兜底】没人指定时用 dev。
+  #                    生产环境设了 SPRING_PROFILES_ACTIVE=prod，
+  #                    就会用 prod，这里的 default 自动失效。
+  #
+  # 本地开发：什么都不用设，自动走 dev
+  # 生产部署：设环境变量 SPRING_PROFILES_ACTIVE=prod 即可
+  # ----------------------------------------------------------
+  profiles:
+    default: dev
+
+  # 统一时区，避免服务器与客户端时间不一致导致的数据错乱
+  jackson:
+    time-zone: Asia/Shanghai
+    date-format: yyyy-MM-dd HH:mm:ss
+    # null 字段是否返回给前端。false = 不返回，可减小响应体积
+    default-property-inclusion: non_null
+
+logging:
+  level:
+    root: info
+    # 自己项目的包开 debug，方便开发期观察 SQL、请求参数等
+    com.gymlog: debug
+
+  # ----------------------------------------------------------
+  # 日志编码
+  #
+  # 为什么必须显式设置：
+  #   Java 18 之前，file.encoding 默认取操作系统编码。
+  #   中文 Windows 上是 GBK，而现代终端（Windows Terminal、
+  #   VS Code、IDEA）默认按 UTF-8 解码——
+  #   Java 写 GBK 字节、终端按 UTF-8 读，中文日志就变成乱码。
+  #
+  # 只设 console 不够：如果同时输出到文件，文件也要 UTF-8，
+  # 否则用编辑器打开日志文件同样是乱码。
+  # ----------------------------------------------------------
+  charset:
+    console: UTF-8
+    file: UTF-8

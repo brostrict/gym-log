@@ -1,0 +1,40 @@
+# ============================================================
+# gym-log 后端 —— 开发环境配置「模板」
+#
+# 用法：复制本文件为 application-dev.yml，然后填入自己的数据库密码。
+#   cp application-dev.yml.example application-dev.yml
+#
+# application-dev.yml 已被 .gitignore 忽略，密码不会进 git。
+# ============================================================
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 参数说明见 application-dev.yml
+    url: jdbc:mysql://localhost:3306/gym_log?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+    username: root
+    # ↓↓↓ 改成你自己的密码 ↓↓↓
+    # ⚠️ YAML 语法：冒号后面**必须有空格**。
+    #    写成 `password:xxx`（无空格）是无效的——YAML 会把整行当成一个键名，
+    #    结果就是 password 配置读不到，启动时报认证失败。
+    password: YOUR_PASSWORD_HERE
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    validate-on-migrate: true
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+logging:
+  level:
+    org.flywaydb: info
