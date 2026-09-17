@@ -37,6 +37,8 @@
 |---|---|---|---|
 | 2.1 | 动作库表设计 | 2026-09-17 | ✅ |
 | 2.3 | 内置动作库种子数据（90 个） | 2026-09-17 | ✅ |
+| 2.4 | 动作查询接口 | 2026-09-17 | ✅ |
+| 2.4b | 修正别名与分类（V6） | 2026-09-17 | ✅ |
 
 ---
 
@@ -1267,6 +1269,166 @@ SELECT COUNT(*) FROM exercise WHERE metric_type='WEIGHT_REPS' AND bw_factor IS N
 > 唯一约束 `uk_exercise_user_name` 是按 `(user_id, name)` 判重的，
 > 名称不同就不冲突。但命名相似会让人困惑——
 > 更好的做法是加在 `alias` 里而不是造两个名字。这里保留是为了说明这个取舍。
+
+---
+
+## 步骤 2.4 —— 动作查询接口 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+exercise/
+├── ExerciseService.java              查询逻辑（含可见性规则）
+├── ExerciseController.java           GET /exercises, GET /exercises/{id}
+└── dto/
+    ├── ExerciseQuery.java            查询条件
+    └── ExerciseResponse.java         响应（编码 + 中文标签）
+common/PageResponse.java              通用分页响应
+```
+
+### 验证结果
+
+| 场景 | 结果 |
+|---|---|
+| alice 全部 | **91**（90 内置 + 1 自定义） |
+| bob 全部 | **90**（只有内置） |
+| `muscle=CHEST` | 15 |
+| `equipment=DUMBBELL` | 20 |
+| `metricType=REPS_ONLY` | 24 |
+| `onlyCustom=true` | 1 |
+| 分页 `page=1&size=5` | 5 条记录，total=91 |
+| 中文搜索 `卧推` | **6**（窄距/杠铃/上斜/下斜/哑铃/上斜哑铃） |
+| 中文搜索 `深蹲` | 5 |
+| 组合筛选 `CHEST + DUMBBELL` | 4 |
+| 模式筛选 `SQUAT` | 9 |
+
+### ★ 核心安全验证：可见性规则
+
+```
+bob   GET /exercises/96 → 404 {"code":30001,"动作不存在"}
+alice GET /exercises/96 → 200 拿到自己的自定义动作
+```
+
+**列表和单条两条路径都做了校验**——这是关键。
+
+> **为什么单条查询最容易漏**：列表和单条是两套代码路径。
+> 列表加了过滤条件，单条如果直接 `selectById(id)` 就绕过了所有过滤。
+> 攻击方式很直接：拿一个别人的资源 id 直接访问。
+>
+> **这类漏洞在真实项目里极其常见**，因为开发者写完列表接口后，
+> 单条接口往往是从别处复制过来的。
+
+### 越权时返回 404 而不是 403
+
+```
+✗ 403「无权限」 → 攻击者确认了「这个 id 存在」，可据此枚举
+✓ 404「不存在」 → 无法区分「不存在」和「别人的」，拿不到额外信息
+```
+
+**这个原则对所有按 id 访问的资源都适用**（训练记录、计划、照片……）。
+
+### SQL 优先级的坑（写查询条件时极易踩）
+
+```java
+// ✗ 错误写法
+wrapper.eq(Exercise::getUserId, 0)
+       .or()
+       .eq(Exercise::getUserId, userId);
+wrapper.eq(Exercise::getStatus, ENABLED);
+
+// 生成：WHERE user_id = 0 OR user_id = ? AND status = 1
+// AND 优先级高于 OR，实际等价于：
+//       WHERE user_id = 0 OR (user_id = ? AND status = 1)
+// → 内置动作的 status 条件失效了！
+```
+
+```java
+// ✓ 正确写法：用 and(...) 把 OR 条件包起来
+wrapper.and(w -> w.eq(Exercise::getUserId, 0)
+                  .or()
+                  .eq(Exercise::getUserId, userId));
+wrapper.eq(Exercise::getStatus, ENABLED);
+// 生成：WHERE (user_id = 0 OR user_id = ?) AND status = 1
+```
+
+**这类 bug 极难发现**——单测时数据往往很干净，看不出差异。
+
+### 分页的两个必要防护
+
+**① `size` 必须有上限**
+
+```java
+return Math.min(size, 100);
+```
+
+不限制的话，客户端传 `size=1000000` 就能一次拉走整张表——
+既是性能问题，也是数据泄露风险（爬虫可轻松全量抓取）。
+
+**② 排序最后一定要有唯一字段**
+
+```java
+wrapper.orderByAsc(Exercise::getPrimaryMuscle)
+       .orderByAsc(Exercise::getSortOrder)
+       .orderByAsc(Exercise::getId);   // ← 这个不能省
+```
+
+只按前两个排序时，相同 `sort_order` 的记录在**不同页之间顺序可能变化**，
+导致翻页时看到重复或遗漏的记录。用 id 兜底保证顺序稳定。
+
+---
+
+## 步骤 2.4b —— 修正别名与分类（V6）✅
+
+**日期**：2026-09-17
+
+### 发现的两个问题
+
+**这两个都是实际调接口测出来的，不是设计时能想到的。**
+
+| 问题 | 现象 | 根因 |
+|---|---|---|
+| ① 术语不一致 | 搜「徒手」得 **0 条** | 数据里写的是「自重」，用户说的是「徒手」 |
+| ② 分类错误 | 动感单车被归到 `SQUAT` 模式 | 写种子数据时批量赋值导致 |
+
+### 修复
+
+```
+db/migration/V6__fix_exercise_aliases.sql
+```
+
+| 检查项 | 修复前 | 修复后 |
+|---|---|---|
+| 搜「徒手」 | 0 | **27** |
+| 搜「无器械」 | 0 | **27** |
+| 徒手别名覆盖 | — | **27 / 27** |
+| 动感单车 pattern | `SQUAT` | **NULL** |
+
+### 为什么新建 V6 而不是改 V5
+
+**已执行的迁移脚本是不可变的**——Flyway 会校验 checksum，改了会导致启动失败。
+
+这不是限制，而是**版本化迁移可靠性的来源**：每个脚本代表一次已发生的历史事实，
+历史不能改写，只能追加新的修正。
+
+> 这个约束在实际开发中会经常遇到：写完迁移、跑过了、发现写错了。
+> **正确做法永远是新建一个脚本，而不是回去改。**
+
+### 踩坑
+
+> ⚠️ **测试时 URL 里的中文要手动编码，且极易编错**
+>
+> ```bash
+> # 「器」= E5 99 A8 → %E5%99%A8
+> # 「机」= E6 9C BA → %E6%9C%BA
+> ```
+>
+> 我第一次把「无器械」编成了 `%E6%97%A0%E6%9C%BA%E6%A2%B0`（无机械），
+> 结果返回 0 条，差点误判为「V6 没生效」。
+>
+> **教训**：中文搜索测试返回 0 条时，**先核对 URL 编码，再怀疑服务端**。
+> 用 `printf '字符' | xxd` 确认字节，比肉眼数十六进制可靠。
 
 ---
 
