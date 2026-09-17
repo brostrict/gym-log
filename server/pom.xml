@@ -30,6 +30,15 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <!-- 第三方依赖版本集中在这里，便于统一升级 -->
         <jjwt.version>0.12.7</jjwt.version>
+        <!--
+          ⚠️ springdoc 必须用 2.x 线。
+
+          Maven Central 上它最新是 3.1.1，但那是给 **Spring Boot 4** 的。
+          本项目的 Boot 3.5.3 对应 springdoc 2.x。
+          用错版本的典型症状：启动时报告一堆 NoClassDefFoundError，
+          或者 Swagger 页面 404 但没有任何报错。
+        -->
+        <springdoc.version>2.9.1</springdoc.version>
     </properties>
 
     <dependencies>
@@ -50,6 +59,22 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!--
+          接口文档：springdoc-openapi 自动生成 Swagger UI。
+
+          ⚠️ 版本必须是 2.x —— 见下方 properties 里的说明。
+          它会在运行时扫描所有 @RestController，根据方法签名、
+          参数注解自动生成 OpenAPI 文档，不需要手写任何文档文件。
+
+          好处：文档和代码**天然同步**。手写文档最大的问题就是会过期，
+          而这份是运行时从代码里读出来的，改了代码文档就跟着变。
+        -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
         </dependency>
 
         <!--

@@ -26,6 +26,8 @@
 | 1.8 | SecurityFilterChain 配置 | 2026-09-17 | ✅ |
 | 1.9 | Refresh Token 与登出 | 2026-09-17 | ✅ |
 | 1.10 | RBAC 三张表 | 2026-09-17 | ✅ |
+| 1.11 | Swagger / OpenAPI | 2026-09-17 | ✅ |
+| 1.12 | Phase 1 总验收 | 2026-09-17 | ✅ |
 
 ---
 
@@ -932,6 +934,135 @@ WHERE r.code = 'USER'
 >
 > 即使表名已经写了库前缀，多表 DELETE 的别名解析仍需要默认库。
 > 单表 DELETE 不受影响。
+
+---
+
+## 步骤 1.11 —— Swagger / OpenAPI ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+config/OpenApiConfig.java     文档元信息 + JWT 认证方案
+config/SecurityConfig.java    放行 Swagger 路径
+pom.xml                       +springdoc-openapi-starter-webmvc-ui 2.9.1
+```
+
+### 验证结果
+
+| 检查项 | 结果 |
+|---|---|
+| `/swagger-ui.html` | 302 重定向到 `/swagger-ui/index.html` |
+| `/swagger-ui/index.html` | 200 |
+| `/v3/api-docs` | 5202 字节 JSON |
+| 自动发现的接口 | **6 个**（4 个 auth + ping + users/me） |
+| 安全方案 | `bearerAuth` → `type=http scheme=bearer format=JWT` |
+| 全局安全要求 | 已应用 |
+
+### 为什么不选 springfox
+
+| | springfox | springdoc |
+|---|---|---|
+| 维护状态 | **2020 年后基本停更** | 活跃维护 |
+| Spring Boot 3 | **不支持** | 支持 |
+| 规范 | Swagger 2 | **OpenAPI 3** |
+
+**springfox 在 Spring Boot 3 上根本跑不起来**——它依赖的 `javax.*` 包已经换成了
+`jakarta.*`。这是选型时必须先查的：**库的维护状态和框架版本兼容性，
+比它的功能列表重要得多。**
+
+### 版本陷阱（第三次遇到）
+
+Maven Central 上 springdoc 最新是 **3.1.1**，但那是给 **Spring Boot 4** 的。
+本项目 Boot 3.5.3 对应 **2.x** 线。
+
+用错版本的典型症状：启动时一堆 `NoClassDefFoundError`，
+或者 Swagger 页面 404 但没有任何报错。
+
+### 一个必要的安全提醒
+
+Swagger 路径**只在开发环境应该放行**。生产环境把接口文档暴露给公网，
+等于给攻击者一份**完整的攻击面清单**——有哪些接口、什么参数、什么返回结构。
+
+V1 暂时放行，Phase 8 部署时会改成「仅开发环境生效」。
+
+---
+
+## 步骤 1.12 —— Phase 1 总验收 ✅
+
+**日期**：2026-09-17
+
+### 验收结果
+
+| # | 验收项 | 结果 |
+|---|---|---|
+| ① | 注册 | 200 |
+| ② | 登录拿 token | 200，返回双 token |
+| ③ | 带 token 访问受保护接口 | 200，返回资料 |
+| ④ | 不带 token | **401** `{"code":10001}` |
+| ⑤ | 篡改 token | **401** `{"code":10001}` |
+| ⑥ | 刷新令牌 | 200，新 token 可用 |
+| ⑦ | 登出后 refresh 失效 | **401** `{"code":20007}` |
+| ⑧ | `?id=1` 越权尝试 | **参数被忽略**，仍返回自己的数据 |
+
+### 额外补验：token 真实过期路径
+
+1 小时的有效期没法等，所以用 `--jwt.access-token-ttl=5s` 重启验证：
+
+```
+TTL 设为 5 秒         → expiresIn = 5
+立即访问              → HTTP 200
+等 8 秒后访问         → HTTP 401 {"code":10001,"message":"未登录或登录已过期"}
+用 refresh 换新 token → HTTP 200
+```
+
+**这一次证明的是 jjwt 真的在校验 `exp` 字段**，而不只是把它写进了 payload——
+两者的区别，正是「配置看起来对」和「行为确实对」的区别。
+
+---
+
+## Phase 1 完成总结
+
+### 交付物
+
+| 类别 | 内容 |
+|---|---|
+| **数据库** | 7 张表（`user` / `refresh_token` / `role` / `permission` / `user_role` / `role_permission` / `flyway_schema_history`） |
+| **迁移脚本** | V1（用户）、V2（刷新令牌）、V3（RBAC） |
+| **接口** | 6 个：注册、登录、刷新、登出、健康检查、当前用户资料 |
+| **安全机制** | JWT 认证、refresh token 轮换与撤销、RBAC 表结构、统一 401/403 响应 |
+| **文档** | Swagger UI 自动生成 |
+
+### 代码规模
+
+```
+33 个 Java 文件（main）
++ 1 个测试类
+```
+
+### 学到的东西（按面试价值排序）
+
+1. **并发下的唯一性保证**——应用层「先查后插」永远不可靠，必须靠数据库唯一索引兜底
+2. **账号枚举与时序攻击防护**——错误信息要一致，耗时要接近
+3. **双 token 设计**——为什么 refresh token 不能是 JWT（要能撤销）
+4. **SHA-256 vs BCrypt 的选择依据**——取决于输入的熵，不是「越慢越好」
+5. **RBAC 三层模型**——为什么不在 user 表加 `is_admin`
+6. **401 vs 403 的语义区别**——以及匿名用户该返回哪个
+7. **JWT 签名的价值**——payload 可读但不可改
+
+### 踩过的坑（11 个）
+
+前 8 个见前面的记录，本轮新增：
+
+| # | 坑 | 教训 |
+|---|---|---|
+| 9 | `isAuthenticated()` 对匿名用户也返回 true | 判断登录要看是不是 `AnonymousAuthenticationToken` |
+| 10 | `/error` 不放行会让错误响应被 401 覆盖 | 响应码「不对劲」时先确认请求有没有进 Controller |
+| 11 | MySQL 多表 `DELETE ... JOIN` 需要先选库 | 加 `-D 库名` 或先 `USE` |
+
+> **Windows 中文环境的编码问题占了 4 个坑**（源码、日志、命令行参数、SQL 参数），
+> 且每次表现形式都不同。这一条经验本身就值回票价。
 
 ---
 

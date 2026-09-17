@@ -119,8 +119,11 @@
 | 1.8 | SecurityFilterChain 配置 | ✅ 完成 |
 | 1.9 | Refresh Token 与登出 | ✅ 完成 |
 | 1.10 | RBAC 三张表 | ✅ 完成 |
-| 1.11 | Swagger / OpenAPI | ⬜ |
-| 1.12 | Phase 1 验收 | ⬜ |
+| 1.11 | Swagger / OpenAPI | ✅ 完成 |
+| 1.12 | Phase 1 验收 | ✅ 完成 |
+
+> 🎉 **Phase 1 完成（2026-09-17）**。8 项验收全通过，另补验了 token 真实过期路径。
+> 交付：7 张表、6 个接口、33 个 Java 文件。详见 [DEV-LOG.md Phase 1 完成总结](./DEV-LOG.md#phase-1-完成总结)。
 
 ---
 
