@@ -16,9 +16,12 @@
 
 **核心功能**：
 
-- **跟练模式** —— 按计划逐动作、逐组引导，管理组间休息计时，全程单手可操作、屏幕常亮、断点续训、完全离线可用
-- **计划管理** —— 内置成熟计划模板（5×5、推拉腿、上下肢分化），支持自定义与周期化
-- **数据可视化** —— 体重移动平均、估算 1RM 力量曲线、肌群周容量、训练频率、计划执行度
+- **跟练模式** —— 按计划逐动作、逐组引导，管理组间休息计时，支持**超级组**；全程单手可操作、屏幕常亮、断点续训、完全离线可用；**提示音不打断背景音乐**
+- **计划管理** —— 内置 6 个成熟模板（力量 / 分化 / **徒手居家**），自定义计划支持任意周数、逐组处方、超级组编排、周期化
+- **身体数据** —— 体重、围度、体成分、生理指标、主观状态、体态照片对比
+- **数据可视化** —— 体重移动平均、估算 1RM 力量曲线、肌群周组数、训练容量、训练频率、计划执行度
+- **管理后台** —— RBAC 权限模型、动作库与模板维护、用户管理、审计日志、数据看板
+- **饮食与 AI** —— 热量与蛋白质轻量记录（含 TDEE 反推）；AI 只做训练总结与解释，不做计划生成
 
 ---
 
@@ -26,8 +29,8 @@
 
 | 层 | 选型 |
 |---|---|
-| **后端** | Java 17 · Spring Boot 3 · MySQL 8 · MyBatis-Plus · Spring Security + JWT · Flyway · springdoc-openapi |
-| **移动端** | Flutter 3 · Dart 3 · Riverpod · drift (SQLite) · fl_chart |
+| **后端** | Java 17 · Spring Boot 3 · MySQL 8 · MyBatis-Plus · Spring Security + JWT · **RBAC** · Flyway · springdoc-openapi · WebClient（LLM） |
+| **移动端** | Flutter 3 · Dart 3 · Riverpod · drift (SQLite) · fl_chart · wakelock_plus · audioplayers · flutter_tts |
 | **Web 端** | Vue 3 · Vite · TypeScript · Element Plus · ECharts · Pinia |
 | **开发工具** | IntelliJ IDEA · VS Code · Android Studio |
 

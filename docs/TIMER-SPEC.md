@@ -87,8 +87,10 @@
 | `idle` | `preparing` | 用户点「开始训练」 | 创建 `WorkoutSession`，深拷贝处方快照，启动 Wake Lock |
 | `preparing` | `exercising` | 点「开始本组」 | 记录 `phaseStartedAt = now` |
 | `exercising` | `setDone` | 点「完成本组」（或耳机线控） | **立即落盘 SetRecord**，判定 PR |
-| `setDone` | `resting` | 自动（还有组） | `restDeadlineAt = now + 该动作的 rest_sec` |
-| `setDone` | `exercise_done` | 自动（无更多组） | — |
+| `setDone` | `exercising` | 自动（**超级组内还有下一个动作**） | **无休息**，`currentExerciseInGroup++`，记录 `phaseStartedAt` |
+| `setDone` | `resting` | 自动（超级组一轮完成，或单独动作还有组） | `restDeadlineAt = now + rest_sec`（超级组取组内最大值） |
+| `setDone` | `exercise_done` | 自动（单独动作且无更多组） | — |
+| `setDone` | `exercise_done` | 自动（超级组最后一轮完成） | — |
 | `resting` | `preparing` | 倒计时归零 / 点「跳过」 | 记录 `rest_actual_sec`，提示音 + 语音播报 |
 | `resting` | `paused` | 点「暂停」 | 记录 `pausedAt`，冻结倒计时 |
 | `paused` | `resting` | 点「继续」 | `restDeadlineAt += (now − pausedAt)` |
@@ -117,6 +119,76 @@
 
 ---
 
+### 1.5 超级组的轮次推进
+
+> **这是加入超级组后状态机复杂度上升的全部来源。** 核心变化：从「一维推进」变成「二维推进」。
+
+#### 1.5.1 两个推进维度
+
+| 维度 | 字段 | 含义 |
+|---|---|---|
+| **组内位置** | `currentExerciseInGroup` | 当前是超级组内第几个动作（单独动作恒为 0） |
+| **轮次** | `currentRound` | 当前是第几轮（单独动作时等价于组序号） |
+
+#### 1.5.2 完成一组后的推进逻辑
+
+```
+完成一组（setDone）后：
+
+  if 当前动作属于超级组:
+      if currentExerciseInGroup < group_size − 1:
+          # 超级组内还有下一个动作 → 直接切，不休息
+          currentExerciseInGroup++
+          → exercising
+
+      else:
+          # 一轮做完 → 休息
+          currentExerciseInGroup = 0
+
+          if currentRound < total_rounds − 1:
+              currentRound++
+              → resting          # 休息完进入下一轮的第一个动作
+          else:
+              → exercise_done    # 超级组全部完成
+
+  else:
+      # 单独动作，行为与加入超级组之前完全一致
+      if 还有下一组:
+          → resting
+      else:
+          → exercise_done
+```
+
+#### 1.5.3 组记录的归属
+
+**关键：超级组不产生新的记录类型。**
+
+```
+A1（卧推）做 3 组，A2（划船）做 3 组，组成超级组，共 3 轮
+
+执行顺序：
+  A1-1 → A2-1 → [休息] → A1-2 → A2-2 → [休息] → A1-3 → A2-3 → [休息] → 完成
+
+落库结果：
+  6 条独立的 SetRecord
+    ├─ 卧推 第1组、卧推 第2组、卧推 第3组
+    └─ 划船 第1组、划船 第2组、划船 第3组
+```
+
+**`set_index` 按各自动作独立计数**（卧推的组序号是 1/2/3，划船的也是 1/2/3），**不是**执行顺序的 1–6。这保证了单动作历史、容量计算、PR 判定全部不受超级组影响。
+
+#### 1.5.4 边界情况
+
+| 情况 | 处理 |
+|---|---|
+| 超级组内各动作**组数不同**（A1 三组、A2 四组） | **以最多的为准**，少的动作在后续轮次中标记为「已完成」，界面提示「本轮跳过 A1」 |
+| 超级组执行中**临时拆散** | 从当前轮次开始转为顺序执行，已完成的组保留 |
+| 超级组内**跳过某一个动作** | 该动作本轮不记录，`currentExerciseInGroup++` 继续 |
+| 超级组只有 1 个动作 | 等同于单独动作，走 `else` 分支 |
+| 超级组与 deload 周叠加 | 各动作独立应用各自的强度修饰（见 [REQUIREMENTS.md 未决问题 Q10](./REQUIREMENTS.md#112-待定)） |
+
+---
+
 ## 2. 持久化
 
 ### 2.1 存储结构
@@ -126,16 +198,18 @@
 ```dart
 // 示意结构，非最终代码
 class ActiveSession {
-  String sessionId;          // UUID，同时是服务端幂等键
-  int currentExerciseIndex;  // 当前是第几个动作
-  int currentSetIndex;       // 当前是第几组
-  String phase;              // 状态机当前状态
-  int? phaseStartedAt;       // epoch ms，进入当前状态的时刻
-  int? restDeadlineAt;       // epoch ms，休息结束的绝对时刻
-  int? pausedAt;             // epoch ms，暂停时刻（仅 paused 状态有值）
-  int restDurationSec;       // 本次休息的总时长（用于计算进度百分比）
+  String sessionId;              // UUID，同时是服务端幂等键
+  int currentExerciseIndex;      // 当前是训练日中第几个「动作条目」
+  int currentSetIndex;           // 当前是第几组（单独动作时使用）
+  int currentRound;              // 超级组：当前第几轮
+  int currentExerciseInGroup;    // 超级组：组内第几个动作（单独动作恒为 0）
+  String phase;                  // 状态机当前状态
+  int? phaseStartedAt;           // epoch ms，进入当前状态的时刻
+  int? restDeadlineAt;           // epoch ms，休息结束的绝对时刻
+  int? pausedAt;                 // epoch ms，暂停时刻（仅 paused 状态有值）
+  int restDurationSec;           // 本次休息的总时长（用于计算进度百分比）
   bool wakeLockActive;
-  int updatedAt;             // epoch ms，用于冲突检测
+  int updatedAt;                 // epoch ms，用于冲突检测
 }
 ```
 
@@ -237,6 +311,55 @@ App 启动时检查是否存在未完成的活动会话：
 这样用户闭着眼也能知道还剩多久。
 
 **耳机线控 / 媒体键**：通过 `audio_service` 或平台通道把「播放/暂停键」映射为「完成本组」。这是力量训练的高价值细节——用户在卧推凳上不方便掏手机。
+
+### 3.4.1 音频隔离（硬性要求）
+
+> **健身房里绝大多数人戴耳机听歌训练。** 如果本 App 的提示音每 90 秒打断一次音乐，用户会直接卸载。**这不是优化项，是能否使用的前提。**
+
+**目标**：提示音与语音播报必须**混入**用户的音乐，而不是**抢占**。
+
+| 要求 | 说明 |
+|---|---|
+| 不暂停其他 App 的音乐 | — |
+| 不降低其他 App 的音量 | 很多实现默认会 duck（压低）其他音频，这也不可接受 |
+| 不夺取音频焦点 | 这是根本原因——夺取焦点必然导致系统去处理其他 App |
+
+**Android 实现**：
+
+```dart
+// audioplayers 的 AudioContext 配置
+AudioContext(
+  android: AudioContextAndroid(
+    isSpeakerphoneOn: false,
+    stayAwake: false,
+    contentType: AndroidContentType.sonification,  // 关键
+    usageType: AndroidUsageType.assistanceSonification,  // 关键
+    audioFocus: AndroidAudioFocus.none,  // 关键：不申请焦点
+  ),
+)
+```
+
+`USAGE_ASSISTANCE_SONIFICATION` 让系统把这个音频当作**辅助提示音**处理，与媒体流混音而非互斥。
+
+**iOS 实现**：
+
+- `AVAudioSession` 类别设为 `.ambient`（默认与其他音频混音），**或** `.playback` 加 `.mixWithOthers` 选项。
+- **不要用** `.playback` 单独使用——那会打断其他音频。
+
+**TTS 要单独配置** ⚠️
+
+> **这是最容易漏掉的一条**：提示音配好了，语音播报仍然会打断音乐。
+
+`flutter_tts` 默认使用 `.playback` 类别。必须显式设置：
+
+```dart
+await flutterTts.setIosAudioCategory(
+  IosTextToSpeechAudioCategory.ambient,
+  [IosTextToSpeechAudioCategoryOptions.mixWithOthers],
+);
+```
+
+**验收方式**：用网易云音乐或 QQ 音乐播放歌曲，跑完整场跟练，**音乐全程不得中断或降低音量**。
 
 ### 3.5 权限清单
 
@@ -360,6 +483,14 @@ final deadline = DateTime.now().millisecondsSinceEpoch + 90000;
 | T-12 | 点「跳过休息」 | 立即进入下一组的准备状态 |
 | T-13 | 训练中接听来电 3 分钟 | 挂断后回到 App，计时正确 |
 | T-14 | 未完成会话存在时启动 App | 弹出「是否继续」询问 |
+| **T-15** | 超级组 A1/A2 执行中，A1 完成第 1 组 | **不出现休息倒计时**，直接切到 A2 第 1 组 |
+| **T-16** | 超级组完成一整轮（A1-1 → A2-1） | **此时才**启动休息倒计时 |
+| **T-17** | 超级组 A1 三组 + A2 三组执行完 | 数据库 **6 条独立 SetRecord**，A1 的 `set_index` = 1/2/3，A2 的也是 1/2/3 |
+| **T-18** | 超级组中 A1 输入 60kg×8 | A2 的默认建议值**不受影响** |
+| **T-19** | 超级组 A1 三组、A2 四组 | 第 4 轮跳过 A1，界面有提示，不报错 |
+| **T-20** | 超级组执行中杀掉 App 重开 | 恢复到正确的 `currentRound` 与 `currentExerciseInGroup` |
+| **T-21** | 用网易云音乐放歌，跑完整场跟练 | **音乐全程不中断、不降音量、不被暂停** |
+| **T-22** | 语音播报开启 + 播放音乐 | 播报时音乐**同样不中断**（验证 TTS 音频类别已配置） |
 
 ---
 
@@ -369,6 +500,6 @@ final deadline = DateTime.now().millisecondsSinceEpoch + 90000;
 |---|---|
 | 后台常驻服务持续计时 | 不需要。绝对时间戳方案本身就不依赖后台执行 |
 | 自动识别动作（摄像头） | 见 [REQUIREMENTS.md 第 4 节](./REQUIREMENTS.md#4-范围与非目标) |
-| 超级组（两动作交替无休息） | V1 状态机复杂度会显著上升。留待 V2（见未决问题 Q5） |
+| ~~超级组~~ | **已改为 V1 支持**，见 1.5 节与 [REQUIREMENTS.md M4-G](./REQUIREMENTS.md#m4-g-超级组执行) |
 | 组内实时计数（自动数次数） | 需要传感器或 CV，不在范围内 |
 | 与智能手表联动控制 | 各厂商 SDK 割裂 |
