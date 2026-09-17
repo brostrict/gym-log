@@ -116,7 +116,7 @@
 | 1.5 | 注册接口 | ✅ 完成 |
 | 1.6 | 登录接口与 JWT 签发 | ✅ 完成 |
 | 1.7 | JwtAuthenticationFilter | ✅ 完成 |
-| 1.8 | SecurityFilterChain 配置 | ⬜ |
+| 1.8 | SecurityFilterChain 配置 | ✅ 完成 |
 | 1.9 | Refresh Token 与登出 | ⬜ |
 | 1.10 | RBAC 三张表 | ⬜ |
 | 1.11 | Swagger / OpenAPI | ⬜ |
@@ -538,20 +538,27 @@ Payload: {"sub":"6","email":"alice@example.com","iat":1789628429,"exp":178963202
 
 ---
 
-### 步骤 1.8 —— SecurityFilterChain 配置 ★
+### ✅ 步骤 1.8 —— SecurityFilterChain 配置 ★
 
 | 项 | 内容 |
 |---|---|
-| **目的** | 声明哪些路径放行、哪些需要认证 |
-| **产出** | `SecurityConfig` |
-| **知识点** | `SecurityFilterChain` Bean、`csrf().disable()` 的原因（无状态 API）、`sessionCreationPolicy(STATELESS)`、**为什么用双 FilterChain**（公开接口 vs 管理接口） |
-| **谁写** | **我写，你审查** |
-| **验收** | `/auth/**` 无需 token 可访问；`/api/v1/sessions` 等业务接口必须带 token |
+| **目的** | 声明哪些路径公开、哪些需要认证，以及被拒绝时返回什么 |
+| **产出** | `SecurityConfig`（收紧）、`RestAuthenticationEntryPoint`（401）、`RestAccessDeniedHandler`（403）、`UserController` + `/users/me` |
+| **知识点** | 401 vs 403 的区别、授权规则匹配顺序、CORS 预检、结构性越权免疫 |
+| **谁写** | 我写，你审查 |
+| **验收** | 公开路径免 token；受保护路径无 token 返回 401；非管理员访问管理端返回 403 |
+
+**验收结论**：六种组合全部符合预期。**项目至此有了第一个真正受保护的接口**（`GET /api/v1/users/me`）。
+
+> 📖 **详细记录（含 401/403 的辨析、`/error` 放行的必要性）见 [DEV-LOG.md 步骤 1.8](./DEV-LOG.md#步骤-18--securityfilterchain-配置-)。**
 
 **审查时你要能回答**：
-- 为什么这个项目要 `csrf().disable()`？什么情况下**不能**关？
-- `SessionCreationPolicy.STATELESS` 意味着什么？
-- 为什么要配**两个** `SecurityFilterChain`？怎么决定一个请求走哪条链？
+- 401 和 403 的区别是什么？客户端拿到这两个码分别该做什么？
+- 为什么**匿名用户**访问 `/admin/**` 返回的是 401，而**已登录的非管理员**返回 403？
+- 为什么这个项目可以 `csrf().disable()`？什么情况下**不能**关？
+- `SessionCreationPolicy.STATELESS` 意味着什么？对水平扩展有什么影响？
+- 为什么 `/error` 必须加到公开路径？不加会怎样？
+- 为什么 CORS 预检（OPTIONS）必须放行？
 
 ---
 

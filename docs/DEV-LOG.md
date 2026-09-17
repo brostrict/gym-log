@@ -23,6 +23,7 @@
 | 1.5 | 注册接口 | 2026-09-17 | ✅ |
 | 1.6 | 登录接口与 JWT 签发 | 2026-09-17 | ✅ |
 | 1.7 | JwtAuthenticationFilter | 2026-09-17 | ✅ |
+| 1.8 | SecurityFilterChain 配置 | 2026-09-17 | ✅ |
 
 ---
 
@@ -602,6 +603,107 @@ CSRF 攻击依赖「浏览器自动带上 Cookie」。本项目凭据是 `Author
 
 ---
 
+## 步骤 1.8 —— SecurityFilterChain 配置 ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+security/
+├── RestAuthenticationEntryPoint.java   401 响应处理器
+└── RestAccessDeniedHandler.java        403 响应处理器
+config/
+└── SecurityConfig.java                 收紧授权规则（原为 permitAll）
+user/
+├── UserController.java                 GET /api/v1/users/me（第一个受保护接口）
+└── dto/UserProfileResponse.java
+```
+
+### 验证结果
+
+| 路径 | 条件 | HTTP | 响应 |
+|---|---|---|---|
+| `/system/ping` | 无 token | 200 | — |
+| `/users/me` | 无 token | **401** | `{"code":10001,"message":"未登录或登录已过期"}` |
+| `/users/me` | 篡改 token | **401** | 同上 |
+| `/users/me` | 合法 token | **200** | 用户资料 |
+| `/admin/users` | **无 token** | **401** | 同上 |
+| `/admin/users` | **已登录但非管理员** | **403** | `{"code":10002,"message":"没有权限执行此操作"}` |
+
+**敏感字段泄漏检查**：`passwordHash` / `deleted` / `providerUserId` 均未出现在响应中 ✓
+
+### 最容易搞错的一点：匿名用户访问管理端返回 401 而不是 403
+
+```
+未登录   + 访问 /admin/**  →  401   「你是谁？」
+已登录   + 访问 /admin/**  →  403   「知道你是谁，但你不够格」
+```
+
+**为什么匿名时应返回 401 而不是 403**：401 意味着「去认证可能就能通过」——
+客户端应该跳登录页。如果返回 403，客户端会提示「无权限」，
+但用户其实只是**没登录**，跳一下登录页就好了。
+
+这是 Spring Security 的 `ExceptionTranslationFilter` 内置的正确行为：
+- 匿名用户权限不足 → 交给 `AuthenticationEntryPoint`（401）
+- 已认证用户权限不足 → 交给 `AccessDeniedHandler`（403）
+
+### 关键设计
+
+**公开路径列表越短越安全**
+
+每加一条都是一次有意识的决定。加之前先问：**未登录的人访问它，会造成什么后果？**
+
+```java
+private static final String[] PUBLIC_PATHS = {
+    "/api/v1/auth/register",
+    "/api/v1/auth/login",
+    "/api/v1/auth/refresh",
+    "/api/v1/system/ping",     // 负载均衡器探活，要求认证会被误判为不可用
+    "/error",                  // ⚠️ 见下方踩坑
+};
+```
+
+**`anyRequest().authenticated()` 是安全默认值**
+
+新增接口时如果忘了配规则，默认是「需要登录」而不是「公开」。
+**宁可多拦，不可漏放。**
+
+**授权规则从上到下匹配，先匹配到的生效**
+
+```java
+.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()   // CORS 预检必须放行
+.requestMatchers(PUBLIC_PATHS).permitAll()
+.requestMatchers("/api/v1/admin/**").hasRole("ADMIN")     // Phase 6 才真正生效
+.anyRequest().authenticated()                              // 兜底
+```
+
+**CORS 预检为什么必须放行**：浏览器发预检（OPTIONS）时**不带 Authorization 头**——
+这是 CORS 规范规定的。如果预检也要求认证，跨域请求永远无法成功。
+
+**`/users/me` 的结构性越权免疫**
+
+接口不接受 `id` 参数，`userId` **完全来自 token**。所以结构上不存在
+「用 A 的 token 拿 B 的数据」的可能。
+
+> 对比：如果接口设计成 `/users/{id}`，就必须显式校验
+> `id` 是否等于当前登录用户——**这是越权漏洞最常见的形式**。
+
+### 踩坑
+
+> ⚠️ **坑 10：`/error` 不放行会导致错误响应被 401 覆盖**
+>
+> Spring Boot 处理异常时会把请求**转发到 `/error`**。如果这个路径不在公开列表里，
+> 它会被 Security 拦截，客户端拿到的是 401 而不是真实的错误码。
+>
+> **症状**：某个接口本该返回 400 参数错误，实际却返回 401「未登录」——
+> 排查时会被严重误导（以为是认证问题，实际是参数问题）。
+>
+> **排查这类问题的思路**：如果一个接口的响应码「不对劲」，
+> 先确认它到底有没有进到你的 Controller——看日志里有没有对应的业务日志。
+
+---
+
 ## 踩坑汇总
 
 | # | 坑 | 一句话教训 |
@@ -615,6 +717,7 @@ CSRF 攻击依赖「浏览器自动带上 Cookie」。本项目凭据是 `Author
 | 7 | SQL 日志绕过 Logback 导致编码失控 | 用 `Slf4jImpl` 不用 `StdOutImpl` |
 | 8 | Windows 命令行传中文参数损坏 | 用 `-d @文件`；看字节不看显示 |
 | 9 | `isAuthenticated()` 对匿名用户也返回 true | 判断登录要看是不是 `AnonymousAuthenticationToken` |
+| 10 | `/error` 不放行会让错误响应被 401 覆盖 | 接口响应码「不对劲」时，先确认请求有没有进到 Controller |
 
 > **测试方法本身的坑**：验证「篡改检测」时改了 Base64 的最后一个字符，
 > 结果验签通过了——因为 86 个 Base64 字符 = 516 位，只有 512 位有效，

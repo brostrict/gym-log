@@ -7,6 +7,7 @@ import com.gymlog.common.JwtService;
 import com.gymlog.user.dto.LoginRequest;
 import com.gymlog.user.dto.LoginResponse;
 import com.gymlog.user.dto.RegisterRequest;
+import com.gymlog.user.dto.UserProfileResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
@@ -180,6 +181,28 @@ public class UserService {
                 jwtService.getAccessTokenTtlSeconds(),
                 new LoginResponse.UserBrief(user.getId(), user.getEmail(), user.getNickname())
         );
+    }
+
+    /**
+     * 查询用户资料。
+     *
+     * <p><b>为什么要有「用户不存在」这个分支</b>：正常情况下不会走到——
+     * userId 是从合法 token 里解出来的，用户必然存在。
+     *
+     * <p>但有两种例外：
+     * <ol>
+     *   <li><b>用户在 token 有效期内被删除了</b>。token 还没过期，
+     *       但数据库里的记录已经没了。这时应该返回 404 而不是抛空指针。</li>
+     *   <li><b>token 是伪造的</b>（虽然验签应该挡住，但多一层防御没坏处）。</li>
+     * </ol>
+     * 这也是**越权防护的体现**：查询条件带 userId，用户只能看到自己的数据。
+     */
+    public UserProfileResponse getProfile(Long userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BizException(ErrorCode.USER_NOT_FOUND);
+        }
+        return UserProfileResponse.from(user);
     }
 
     /**
