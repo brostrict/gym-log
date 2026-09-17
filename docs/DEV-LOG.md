@@ -22,6 +22,7 @@
 | 1.4 | 用户实体与 Mapper | 2026-09-17 | ✅ |
 | 1.5 | 注册接口 | 2026-09-17 | ✅ |
 | 1.6 | 登录接口与 JWT 签发 | 2026-09-17 | ✅ |
+| 1.7 | JwtAuthenticationFilter | 2026-09-17 | ✅ |
 
 ---
 
@@ -479,6 +480,128 @@ Signature: zW7OzBAOXXhMiLZQanDv... (86 字符)
 
 ---
 
+## 步骤 1.7 —— JwtAuthenticationFilter ✅
+
+**日期**：2026-09-17
+
+### 做了什么
+
+```
+security/
+└── JwtAuthenticationFilter.java   从 Header 取 token，识别当前用户
+config/
+└── SecurityConfig.java            安全过滤器链（本步为过渡配置）
+pom.xml                             +spring-boot-starter-security
+```
+
+### 验证结果
+
+用临时接口 `/api/v1/system/whoami` 读取 `SecurityContextHolder` 的内容（验证后已删除）：
+
+| 用例 | principal | loggedIn | principalType |
+|---|---|---|---|
+| 不带 token | `anonymousUser` | false | String |
+| **带合法 token** | **`6`** | **true** | **Long** |
+| 篡改签名（中间字符） | `anonymousUser` | false | String |
+| **篡改 payload 冒充用户1** | `anonymousUser` | false | String |
+| 格式非法 `not-a-jwt` | `anonymousUser` | false | String |
+| 缺 `Bearer ` 前缀 | `anonymousUser` | false | String |
+
+同时确认注册/登录接口**没有被 Security 锁住**（仍是 200）。
+
+### 最关键的验证：篡改 payload 冒充他人
+
+```
+原 payload : {"sub":"6","email":"alice@example.com","iat":...,"exp":...}
+改后       : {"sub":"1","email":"alice@example.com","iat":...,"exp":...}
+             ↑ 把 sub 从 6 改成 1，想冒充用户 1；签名保持原样
+
+结果：验签失败 → anonymousUser
+```
+
+**这就是 JWT 签名防的东西。** Payload 谁都能解开看（`base64 -d`），
+但**改了 payload 就算不出对应的签名**——攻击者没有密钥。
+
+一句话总结：**Payload 可读但不可改。**
+
+### 三个设计决策
+
+**① 过滤器不抛异常，只「不认证」**
+
+常见错误写法是「token 无效就返回 401」。但这会导致：
+
+```
+用户 token 过期 → 访问一个【公开接口】（如健康检查）
+→ 过滤器抛 401 → 公开接口也访问不了
+```
+
+正确做法：**token 无效就什么都不做**，继续放行，由授权层决定
+「未认证的请求能不能访问这个路径」。
+
+**② 过滤器不用 `@Component`**
+
+Spring Boot 会把容器里**所有 `Filter` 类型的 Bean** 自动注册到 Servlet 过滤器链上。
+如果标了 `@Component`：
+
+```
+① Spring Boot 自动注册 → 在 Security 链【外】执行一次
+② addFilterBefore 加进 Security 链 → 在链【内】再执行一次
+→ 每个请求解析两遍 JWT，日志打两遍，调试时极度困惑
+```
+
+本项目的做法：**不标 `@Component`**，在 `SecurityConfig` 里手动 `new`。
+
+**③ 关闭 CSRF 的前提**
+
+CSRF 攻击依赖「浏览器自动带上 Cookie」。本项目凭据是 `Authorization` 头里的 token，
+**不是 Cookie**，浏览器不会自动附带，跨域请求也会被拦截。
+
+> ⚠️ **但如果将来改成用 Cookie 存 token，必须把 CSRF 打开**，否则就真的暴露了。
+
+### 关键概念
+
+**`SecurityContextHolder` 底层是 `ThreadLocal`**
+
+所以放进去的认证信息**只在当前请求线程内可见**，请求结束会被清理。
+这也是「无状态」安全的原因：下一个请求是**另一个线程**，拿不到上一个请求的认证信息，
+**必须重新带 token**。
+
+**`addFilterBefore(..., UsernamePasswordAuthenticationFilter.class)` 的位置讲究**
+
+认证类过滤器必须在授权判断之前执行，否则授权时拿不到认证信息，
+所有请求都会被判为「未认证」。
+
+### 踩坑
+
+> ⚠️ **坑 9：`isAuthenticated()` 无法判断「是否已登录」**
+>
+> 用 `auth.isAuthenticated()` 判断登录状态，**匿名用户也会返回 `true`**。
+>
+> 原因：Spring Security 会给未认证的请求塞一个 `AnonymousAuthenticationToken`，
+> 它的 `isAuthenticated()` 语义是「已被识别为匿名用户」，**不是「已登录」**。
+>
+> 正确判断：
+> ```java
+> boolean isAnonymous = auth == null || auth instanceof AnonymousAuthenticationToken;
+> ```
+>
+> 好在授权配置里的 `.authenticated()` 已经正确处理了匿名情况，
+> 但**自己写判断时很容易踩**。
+
+> ℹ️ **测试方法本身的坑：Base64 填充位**
+>
+> 第一次测「篡改签名」时只改了签名的**最后一个字符**，结果**验签通过了**，
+> 一度以为是过滤器有 bug。
+>
+> 原因：签名是 86 个 Base64 字符 = 516 位，而 HMAC-SHA512 只有 512 位——
+> **最后一个字符有 4 位是填充位，改它不影响解码后的字节**。
+>
+> 改中间的字符才是有效篡改。
+>
+> **教训**：验证「篡改检测」时，要确保篡改真的改变了数据。
+
+---
+
 ## 踩坑汇总
 
 | # | 坑 | 一句话教训 |
@@ -491,6 +614,12 @@ Signature: zW7OzBAOXXhMiLZQanDv... (86 字符)
 | 6 | MyBatis-Plus 3.5.9 拆出了分页插件 | 要额外引 `mybatis-plus-jsqlparser` |
 | 7 | SQL 日志绕过 Logback 导致编码失控 | 用 `Slf4jImpl` 不用 `StdOutImpl` |
 | 8 | Windows 命令行传中文参数损坏 | 用 `-d @文件`；看字节不看显示 |
+| 9 | `isAuthenticated()` 对匿名用户也返回 true | 判断登录要看是不是 `AnonymousAuthenticationToken` |
+
+> **测试方法本身的坑**：验证「篡改检测」时改了 Base64 的最后一个字符，
+> 结果验签通过了——因为 86 个 Base64 字符 = 516 位，只有 512 位有效，
+> **最后 4 位是填充位**。改中间的字符才是有效篡改。
+> **教训：验证篡改检测时，要确保篡改真的改变了数据。**
 
 > **这份清单本身就是这个项目最有价值的产出之一。**
 > Windows 中文环境做 Java 开发，编码问题几乎必然遇到，且表现形式各不相同

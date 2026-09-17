@@ -115,7 +115,7 @@
 | 1.4 | 用户实体与 Mapper | ✅ 完成 |
 | 1.5 | 注册接口 | ✅ 完成 |
 | 1.6 | 登录接口与 JWT 签发 | ✅ 完成 |
-| 1.7 | JwtAuthenticationFilter | ⬜ |
+| 1.7 | JwtAuthenticationFilter | ✅ 完成 |
 | 1.8 | SecurityFilterChain 配置 | ⬜ |
 | 1.9 | Refresh Token 与登出 | ⬜ |
 | 1.10 | RBAC 三张表 | ⬜ |
@@ -514,20 +514,27 @@ Payload: {"sub":"6","email":"alice@example.com","iat":1789628429,"exp":178963202
 
 ---
 
-### 步骤 1.7 —— JwtAuthenticationFilter ★
+### ✅ 步骤 1.7 —— JwtAuthenticationFilter ★
 
 | 项 | 内容 |
 |---|---|
 | **目的** | 每个请求进来时，从 Header 解析 token 并放入 SecurityContext |
-| **产出** | `JwtAuthenticationFilter extends OncePerRequestFilter` |
-| **知识点** | Servlet Filter 链、`SecurityContextHolder`、**为什么继承 `OncePerRequestFilter`**、认证 vs 授权的区别 |
-| **谁写** | **我写，你审查** |
-| **验收** | 带合法 token 能通过；不带或带过期 token 被拦截且返回 401 而非 500 |
+| **产出** | `security/JwtAuthenticationFilter`、`config/SecurityConfig`（过渡配置） |
+| **知识点** | `OncePerRequestFilter`、`SecurityContextHolder` 的 ThreadLocal 本质、认证 vs 授权 |
+| **谁写** | 我写，你审查 |
+| **验收** | 合法 token 能识别出用户；篡改/伪造的 token 被拒绝 |
+
+**验收结论**：六种场景全部符合预期。最关键的一条——**篡改 payload 冒充他人被拒**（验签失败）。
+临时验证接口 `/system/whoami` 已删除。
+
+> 📖 **详细记录（含全部验证数据与三个设计决策）见 [DEV-LOG.md 步骤 1.7](./DEV-LOG.md#步骤-17--jwtauthenticationfilter-)。**
 
 **审查时你要能回答**：
 - `OncePerRequestFilter` 比普通 `Filter` 多做了什么？
-- 认证信息放进 `SecurityContextHolder` 之后，后续代码从哪里取？
-- 这个 Filter 里如果抛异常，会被谁捕获？
+- 为什么这个过滤器**不**在 token 无效时抛 401？
+- 为什么它**不**标 `@Component`？标了会怎样？
+- `SecurityContextHolder` 为什么能保证「无状态」？
+- 为什么 `.csrf().disable()` 在这个项目是安全的？什么情况下**不能**关？
 
 ---
 

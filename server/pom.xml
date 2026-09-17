@@ -82,14 +82,30 @@
         </dependency>
 
         <!--
-          只引 spring-security-crypto，不引完整的 starter-security。
+          Spring Security 完整starter。
+          步骤 1.7 引入——此前的接口都是公开的，现在开始要有认证与授权了。
+
+          ⚠️ 引入后 Spring Security 会**默认锁住所有接口**并生成一个随机密码。
+          所以必须同时提供 SecurityFilterChain 配置，否则步骤 1.5/1.6 的
+          注册登录接口会直接返回 401。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!--
+          spring-security-crypto：提供 BCryptPasswordEncoder。
 
           为什么：密码加密只需要 BCryptPasswordEncoder，它在 crypto 这个独立小包里，
           没有任何强制依赖。而完整的 starter-security 一旦引入，
           Spring Security 会**默认锁住所有接口**并生成随机密码，
           步骤 1.5/1.6 的接口就没法直接测了。
 
-          完整的 Security 在第 1.7/1.8 步再引入。
+          步骤 1.7 起 starter-security 已引入，它也会传递带入 crypto。
+          这里仍保留显式声明，遵循「用什么就声明什么」的原则——
+          BCryptPasswordEncoder 是我们**直接使用**的类，
+          不应该依赖「传递依赖恰好带了它」这种偶然。
         -->
         <dependency>
             <groupId>org.springframework.security</groupId>
