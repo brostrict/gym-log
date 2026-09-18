@@ -3,6 +3,8 @@ package com.gymlog.training;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.gymlog.exercise.Exercise;
 import com.gymlog.exercise.ExerciseMapper;
+import com.gymlog.exercise.MetricType;
+import com.gymlog.exercise.MuscleGroup;
 import com.gymlog.program.PrescribedExercise;
 import com.gymlog.program.PrescribedExerciseMapper;
 import com.gymlog.program.Program;
@@ -79,8 +81,8 @@ class WorkoutSessionMapperTest {
         assertThat(exercises).hasSize(1);
         SessionExercise ex = exercises.get(0);
         assertThat(ex.getExerciseName()).isEqualTo("杠铃卧推");
-        assertThat(ex.getPrimaryMuscle()).isEqualTo("CHEST");
-        assertThat(ex.getMetricType()).isEqualTo("WEIGHT_REPS");
+        assertThat(ex.getPrimaryMuscle()).isEqualTo(MuscleGroup.CHEST);
+        assertThat(ex.getMetricType()).isEqualTo(MetricType.WEIGHT_REPS);
         assertThat(ex.getStatus()).isEqualTo(SessionExerciseStatus.PENDING);
         assertThat(ex.getTargetSets()).isEqualTo(3);
 
@@ -252,8 +254,8 @@ class WorkoutSessionMapperTest {
         ex.setSessionId(session.getId());
         ex.setExerciseId(benchId);
         ex.setExerciseName("杠铃卧推");
-        ex.setPrimaryMuscle("CHEST");
-        ex.setMetricType("WEIGHT_REPS");
+        ex.setPrimaryMuscle(MuscleGroup.CHEST);
+        ex.setMetricType(MetricType.WEIGHT_REPS);
         ex.setOrderIndex(1);
         ex.setTargetSets(3);
         ex.setStatus(SessionExerciseStatus.PENDING);

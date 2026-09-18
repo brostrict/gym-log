@@ -1,5 +1,7 @@
 package com.gymlog.program.dto;
 
+import com.gymlog.exercise.MetricType;
+import com.gymlog.exercise.MuscleGroup;
 import com.gymlog.program.TargetWeightType;
 import com.gymlog.training.SetType;
 
@@ -59,11 +61,23 @@ public record ExpandedWorkout(
 
             Long exerciseId,
             String exerciseName,
-            String primaryMuscle,
+
+            /**
+             * 主要肌群。
+             *
+             * <p>用枚举而不是 String：展开函数手里本来就是枚举
+             * （{@code exercise.getPrimaryMuscle()}），转成字符串再转回来
+             * 只是多两次转换和多一个写错的机会。
+             *
+             * <p>Jackson 默认按 {@code name()} 序列化，所以 JSON 形状不变。
+             */
+            MuscleGroup primaryMuscle,
+
+            /** 肌群的中文标签，省得客户端再维护一份映射 */
             String primaryMuscleLabel,
 
             /** 计量类型。决定跟练界面显示哪些输入控件 */
-            String metricType,
+            MetricType metricType,
 
             Integer orderIndex,
 

@@ -1,8 +1,11 @@
 package com.gymlog.training;
 
+import com.gymlog.common.PageResponse;
 import com.gymlog.common.Result;
 import com.gymlog.training.dto.SessionCreateRequest;
 import com.gymlog.training.dto.SessionDetailResponse;
+import com.gymlog.training.dto.SessionListItem;
+import com.gymlog.training.dto.SessionSummaryResponse;
 import com.gymlog.training.dto.SetRecordRequest;
 import com.gymlog.training.dto.SetRecordResponse;
 import jakarta.validation.Valid;
@@ -32,6 +35,7 @@ public class SessionController {
 
     private final SessionService sessionService;
     private final SetRecordService setRecordService;
+    private final SessionSummaryService summaryService;
 
     /**
      * 开始一次训练。
@@ -54,6 +58,35 @@ public class SessionController {
     public Result<SessionDetailResponse> create(@AuthenticationPrincipal Long userId,
                                                 @Valid @RequestBody SessionCreateRequest request) {
         return Result.ok(sessionService.create(userId, request));
+    }
+
+    /**
+     * 训练历史（分页，按时间倒序）。
+     *
+     * <p>对应 M5「历史列表与日历」。每项只带列表需要的字段——
+     * 完整内容（每个动作每一组）在详情接口里。
+     */
+    @GetMapping
+    public Result<PageResponse<SessionListItem>> history(
+            @AuthenticationPrincipal Long userId,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return Result.ok(PageResponse.from(summaryService.history(userId, page, size)));
+    }
+
+    /**
+     * 训练总结 —— 练完之后那一屏。
+     *
+     * <p>包含：容量、组数、时长、完成度、本次刷新的 PR、与上一次同训练日的对比。
+     *
+     * <p><b>容量和组数都给</b>，因为它们回答不同的问题（METRICS 4.0）：
+     * 容量看「总负荷涨没涨」，组数看「练得够不够」。
+     * 只给一个会让用户做出错误的训练决策。
+     */
+    @GetMapping("/{id}/summary")
+    public Result<SessionSummaryResponse> summary(@AuthenticationPrincipal Long userId,
+                                                  @PathVariable Long id) {
+        return Result.ok(summaryService.summary(userId, id));
     }
 
     /**

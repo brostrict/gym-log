@@ -3,6 +3,8 @@ package com.gymlog.training;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.gymlog.exercise.MetricType;
+import com.gymlog.exercise.MuscleGroup;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -50,11 +52,19 @@ public class SessionExercise {
     /** 快照：动作名称。显示用，永不改变 */
     private String exerciseName;
 
-    /** 快照：主要肌群，用于肌群容量与组数统计 */
-    private String primaryMuscle;
+    /**
+     * 快照：主要肌群，用于肌群容量与组数统计。
+     *
+     * <p>用枚举而不是 String：容量口径要按肌群分组，
+     * 字符串比较写错一个字母不会报错，只会静默算漏。
+     */
+    private MuscleGroup primaryMuscle;
 
-    /** 快照：计量类型，决定跟练界面显示哪些录入控件 */
-    private String metricType;
+    /**
+     * 快照：计量类型，决定跟练界面显示哪些录入控件，
+     * 以及**这一组算不算容量**（{@code DURATION} 类的不能折算成重量×次数）。
+     */
+    private MetricType metricType;
 
     /**
      * 快照：自重系数。

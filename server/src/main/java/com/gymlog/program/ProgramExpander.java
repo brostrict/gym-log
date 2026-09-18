@@ -120,12 +120,11 @@ public final class ProgramExpander {
             items.add(new ExpandedWorkout.ExerciseItem(
                     pe.getExerciseId(),
                     exercise == null ? null : exercise.getName(),
-                    exercise == null || exercise.getPrimaryMuscle() == null
-                            ? null : exercise.getPrimaryMuscle().name(),
+                    // 直接传枚举，不再 .name() —— 下游（会话快照）存的就是枚举
+                    exercise == null ? null : exercise.getPrimaryMuscle(),
                     exercise == null || exercise.getPrimaryMuscle() == null
                             ? null : exercise.getPrimaryMuscle().getDisplayName(),
-                    exercise == null || exercise.getMetricType() == null
-                            ? null : exercise.getMetricType().name(),
+                    exercise == null ? null : exercise.getMetricType(),
                     pe.getOrderIndex(),
                     // 超级组信息原样带出去。
                     // ⚠️ 展开算法**不改变**超级组语义——它只影响执行顺序，
