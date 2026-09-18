@@ -151,7 +151,7 @@ class TodayWorkoutServiceTest {
     // ==================================================================
 
     @Test
-    @DisplayName("默认按轮转推荐第 1 个训练日（会话表未建，已完成次数恒为 0）")
+    @DisplayName("默认按轮转推荐第 1 个训练日（还没练过）")
     void defaultsToFirstDayByRotation() {
         Long programId = createTwoDayProgram(LocalDate.of(2026, 9, 14));
 
@@ -159,7 +159,9 @@ class TodayWorkoutServiceTest {
 
         assertThat(r.dayNumber()).isEqualTo(1);
         assertThat(r.dayName()).isEqualTo("推日");
-        // ⚠️ Phase 3 之前恒为 0，见 SessionCounter
+        // 这个测试里没有创建过训练会话，所以已完成次数是 0。
+        // 轮转本身的推进逻辑在 SessionServiceTest 里端到端验证
+        // （完成一场 → 推荐换到下一个训练日）。
         assertThat(r.completedSessions()).isZero();
     }
 
