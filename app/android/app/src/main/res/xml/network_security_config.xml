@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  明文 HTTP 的白名单。
+
+  ## 为什么需要这个文件
+
+  Android 9（API 28）起，`cleartextTrafficPermitted` 默认为 **false**，而本项目的
+  `flutter.targetSdkVersion` 远高于 28 —— 所以**任何 http:// 请求都会被系统拦掉**，
+  报错在 Dart 侧只表现为一句笼统的「网络连接失败」，看不出是明文被拦。
+
+  开发期的后端跑在 `http://localhost:8080`（靠 `adb reverse` 把手机的 8080
+  转发到开发机），所以必须显式放行。
+
+  ## 为什么不是一句 `android:usesCleartextTraffic="true"`
+
+  那是全局放行——**连同以后接的 HTTPS 后端一起，任何明文地址都能走**。
+  这里保持 `base-config` 为 false（安全默认值不变），只对下面几个地址开口子。
+  将来接上 HTTPS 后端时，这个文件可以整个删掉。
+
+  ## ⚠️ 换成局域网 IP 时要改这里
+
+  `app_config.dart` 里记了另一种连法：用 dart-define 把 API_BASE_URL 传成
+  `http://192.168.1.10:8080/api/v1`（局域网 IP）。
+
+  换成局域网 IP 后**必须把那个 IP 加到下面的 domain 列表**，否则会重现
+  「网络连接失败」，而且看不出原因。android 的 network security config
+  **不支持 IP 段通配**，只能一个地址一条。
+
+  （2026-09-18：真机上踩过一次——release 包因为主 manifest 缺 INTERNET 权限、
+  且没有这个文件，所有请求直接失败。见 DEV-LOG 的踩坑表。）
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- adb reverse tcp:8080 tcp:8080 —— 开发机后端 -->
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <!-- Android 模拟器里指向宿主机的固定地址 -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
