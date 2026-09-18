@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -34,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 加个前缀，测试才是自洽的——不必知道种子数据里有什么。
  */
 @SpringBootTest
+@ActiveProfiles({"dev", "test"})
 @Transactional
 class ExerciseMapperTest {
 

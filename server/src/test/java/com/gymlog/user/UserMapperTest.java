@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -27,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 纯逻辑的单元测试不该用它。
  */
 @SpringBootTest
+@ActiveProfiles({"dev", "test"})
 @Transactional
 class UserMapperTest {
 

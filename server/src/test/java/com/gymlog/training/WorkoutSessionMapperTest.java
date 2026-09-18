@@ -18,6 +18,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 它验证的是整个项目最关键的一条设计承诺。
  */
 @SpringBootTest
+@ActiveProfiles({"dev", "test"})
 @Transactional
 class WorkoutSessionMapperTest {
 
@@ -298,7 +300,8 @@ class WorkoutSessionMapperTest {
             Long exerciseId, int sets, int repsMin, int repsMax, int restSec, String weight) {
         return new ProgramCreateRequest.PrescriptionRequest(
                 exerciseId, 1, null, null, sets, repsMin, repsMax, restSec,
-                TargetWeightType.ABSOLUTE, new BigDecimal(weight), null, null, null, null);
+                TargetWeightType.ABSOLUTE, new BigDecimal(weight),
+                null, null, null, null, null, null);
     }
 
     private Exercise findExercise(String name) {

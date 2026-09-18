@@ -9,6 +9,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 必须让机器来核对。
  */
 @SpringBootTest
+@ActiveProfiles({"dev", "test"})
 @Transactional
 class ProgramTemplateTest {
 
@@ -112,6 +114,88 @@ class ProgramTemplateTest {
         // 修的时候能一次改完，不用反复跑
         assertThat(missing)
                 .as("模板引用了动作库里不存在的动作：\n" + String.join("\n", missing))
+                .isEmpty();
+    }
+
+    /**
+     * ★ 时长类动作的模板必须带 {@code targetDurationSec}，且**不能**再有 reps 字段。
+     *
+     * <p><b>这条测试是被一次真实的静默失败逼出来的。</b>
+     *
+     * <p>V14 要修模板 JSON 里「把秒数塞进次数字段」的历史遗留
+     * （{@code "note":"目标是秒数"}）。当时用的是最直觉的写法——
+     * 拿 V9 源文件里的原文做 {@code REPLACE()}：
+     *
+     * <pre>
+     * REPLACE(structure, '"targetRepsMin":30,"targetRepsMax":60', ...)
+     * </pre>
+     *
+     * <p>而 MySQL 的 JSON 列是二进制格式，读出来时**会重排 key**
+     * （按 key 长度、再按字节序），并且渲染时 key 和值之间**带空格**。
+     * 实际存的是 {@code "targetRepsMax": 60, "targetRepsMin": 30}——
+     * REPLACE 匹配 0 行、**静默成功**，Flyway 报告迁移通过。
+     *
+     * <p>后果是「从模板建计划 → 没有 targetDurationSec → 跟练页没有倒计时」，
+     * 整条链路没有任何一层会报错。
+     *
+     * <p>所以必须有一条测试盯着「模板 JSON 里的时长动作真的带上了新字段」。
+     * 迁移里那道 SQL 断言是第二道防线，这是第一道。
+     */
+    @Test
+    @DisplayName("★ 时长类动作的模板带 targetDurationSec，且不再有 reps 字段")
+    void durationExercisesUseTargetDuration() throws IOException {
+        // 名称 → 计量类型
+        var metricByName = new java.util.HashMap<String, com.gymlog.exercise.MetricType>();
+        for (Exercise e : exerciseMapper.selectList(
+                new LambdaQueryWrapper<Exercise>()
+                        .eq(Exercise::getUserId, Exercise.BUILT_IN_USER_ID))) {
+            metricByName.put(e.getName(), e.getMetricType());
+        }
+
+        List<ProgramTemplate> templates = templateMapper.selectList(null);
+        List<String> problems = new ArrayList<>();
+        int checked = 0;
+
+        for (ProgramTemplate t : templates) {
+            JsonNode structure = objectMapper.readTree(t.getStructure());
+            for (JsonNode day : structure.get("days")) {
+                JsonNode exercises = day.get("exercises");
+                if (exercises == null || exercises.isNull()) {
+                    continue;
+                }
+                for (JsonNode ex : exercises) {
+                    JsonNode nameNode = ex.get("exerciseName");
+                    if (nameNode == null || nameNode.isNull()) {
+                        continue;
+                    }
+                    var metric = metricByName.get(nameNode.asText());
+                    if (metric != com.gymlog.exercise.MetricType.DURATION
+                            && metric != com.gymlog.exercise.MetricType.DISTANCE_DURATION) {
+                        continue;
+                    }
+                    checked++;
+                    String where = t.getCode() + " / " + nameNode.asText();
+
+                    JsonNode dur = ex.get("targetDurationSec");
+                    if (dur == null || dur.isNull() || dur.asInt() <= 0) {
+                        problems.add(where + " : 缺少 targetDurationSec（跟练页不会有倒计时）");
+                    }
+
+                    // reps 字段必须清干净。留着的话客户端 repsLabel 会显示
+                    // 「30-60」，语音播报会念「30 次」——那是秒数，不是次数。
+                    if (ex.hasNonNull("targetRepsMin") || ex.hasNonNull("targetRepsMax")) {
+                        problems.add(where + " : reps 字段没清掉（V14 的迁移没生效？）");
+                    }
+                }
+            }
+        }
+
+        assertThat(checked)
+                .as("模板里应当有时长类动作，否则这条测试是空转的")
+                .isGreaterThan(0);
+
+        assertThat(problems)
+                .as("时长类动作的模板字段不对：\n" + String.join("\n", problems))
                 .isEmpty();
     }
 

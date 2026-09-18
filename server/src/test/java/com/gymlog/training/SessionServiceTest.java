@@ -3,6 +3,10 @@ package com.gymlog.training;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.gymlog.common.BizException;
 import com.gymlog.common.ErrorCode;
+import com.gymlog.body.BodyMetricType;
+import com.gymlog.body.BodyService;
+import com.gymlog.body.MetricCondition;
+import com.gymlog.body.dto.BodyMetricRequest;
 import com.gymlog.exercise.Exercise;
 import com.gymlog.exercise.ExerciseMapper;
 import com.gymlog.program.ProgramService;
@@ -11,6 +15,8 @@ import com.gymlog.program.dto.ProgramCreateRequest;
 import com.gymlog.program.dto.ProgramStructureRequest;
 import com.gymlog.training.dto.SessionCreateRequest;
 import com.gymlog.training.dto.SessionDetailResponse;
+import com.gymlog.training.dto.SessionSummaryResponse;
+import com.gymlog.training.dto.SetRecordRequest;
 import com.gymlog.training.dto.TodayWorkoutResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -18,10 +24,12 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * </ol>
  */
 @SpringBootTest
+@ActiveProfiles({"dev", "test"})
 @Transactional
 class SessionServiceTest {
 
@@ -47,11 +56,15 @@ class SessionServiceTest {
     private static final LocalDate DAY = LocalDate.of(2026, 9, 21);
 
     @Autowired private SessionService sessionService;
+    @Autowired private SetRecordService setRecordService;
     @Autowired private TodayWorkoutService todayWorkoutService;
     @Autowired private ProgramService programService;
     @Autowired private WorkoutSessionMapper sessionMapper;
     @Autowired private SessionCounter sessionCounter;
+    @Autowired private SessionExerciseMapper sessionExerciseMapper;
     @Autowired private ExerciseMapper exerciseMapper;
+    @Autowired private BodyService bodyService;
+    @Autowired private SessionSummaryService summaryService;
 
     private Long benchId;
     private Long squatId;
@@ -298,7 +311,196 @@ class SessionServiceTest {
     }
 
     // ==================================================================
-    // 四、状态流转与守卫
+    // 四、★ 训练时长的推算
+    // ==================================================================
+
+    @Test
+    @DisplayName("★ 时长 = 最后一组的完成时刻 − 开始时刻，不是「点结束的时刻」")
+    void durationComesFromLastSetNotFromFinishTap() {
+        // 19:00 开始
+        SessionDetailResponse s = sessionService.create(USER, new SessionCreateRequest(
+                twoDayProgram(List.of(week(1, "0"))), 1, DAY, "k-dur", DAY.atTime(19, 0)));
+        Long exerciseId = firstExerciseId(s.id());
+
+        // 第 1 组 19:05 做完，第 2 组 19:30 做完
+        recordSet(s.id(), exerciseId, 1, DAY.atTime(19, 5));
+        recordSet(s.id(), exerciseId, 2, DAY.atTime(19, 30));
+
+        // 用户把手机揣兜里，两小时后（21:30）才想起来点结束。
+        // 客户端此时会报一个巨大的值——**必须被忽略**。
+        sessionService.finish(USER, s.id(), 9000, null);
+
+        Integer duration = sessionMapper.selectById(s.id()).getDurationSec();
+
+        assertThat(duration)
+                .as("19:00 → 19:30 是 30 分钟；绝不能是客户端报的 9000 秒")
+                .isEqualTo(1800);
+    }
+
+    @Test
+    @DisplayName("一组都没做时，用客户端上报的时长兜底")
+    void durationFallsBackToClientValueWhenNoSets() {
+        SessionDetailResponse s = sessionService.create(USER, new SessionCreateRequest(
+                twoDayProgram(List.of(week(1, "0"))), 1, DAY, "k-dur-empty", DAY.atTime(19, 0)));
+
+        // 没有任何组记录
+        sessionService.finish(USER, s.id(), 45, null);
+
+        assertThat(sessionMapper.selectById(s.id()).getDurationSec())
+                .as("没有组记录可推算时才用客户端的值")
+                .isEqualTo(45);
+    }
+
+    @Test
+    @DisplayName("组记录的时刻早于开始时刻时夹到 0，不出现负数")
+    void durationNeverNegative() {
+        SessionDetailResponse s = sessionService.create(USER, new SessionCreateRequest(
+                twoDayProgram(List.of(week(1, "0"))), 1, DAY, "k-dur-skew", DAY.atTime(19, 0)));
+        Long exerciseId = firstExerciseId(s.id());
+
+        // 设备时钟偏慢：上报的完成时刻早于服务端记录的开始时刻
+        recordSet(s.id(), exerciseId, 1, DAY.atTime(18, 50));
+        sessionService.finish(USER, s.id(), null, null);
+
+        assertThat(sessionMapper.selectById(s.id()).getDurationSec())
+                .as("负数的训练时长比 0 更糟——界面上会显示成乱码")
+                .isZero();
+    }
+
+    private Long firstExerciseId(Long sessionId) {
+        return sessionExerciseMapper.selectList(
+                        new LambdaQueryWrapper<SessionExercise>()
+                                .eq(SessionExercise::getSessionId, sessionId))
+                .get(0).getId();
+    }
+
+    private void recordSet(Long sessionId, Long exerciseId, int setNumber,
+                           LocalDateTime completedAt) {
+        setRecordService.recordSet(USER, sessionId, exerciseId, setNumber,
+                new SetRecordRequest(SetType.WORKING, new BigDecimal("60"), 8,
+                        null, null, null, null, null, completedAt));
+    }
+
+    // ==================================================================
+    // 五、自重动作的快照链（AC-7-8）
+    // ==================================================================
+
+    @Nested
+    @DisplayName("自重动作的容量快照")
+    class BodyweightSnapshot {
+
+        /**
+         * ⭐ 这几条测的是一个**藏了很久的断链**。
+         *
+         * <p>{@code V12} 加了 {@code session_exercise.bw_factor} 列，注释写着
+         * 「容量 = 体重 × bw_factor × 次数」；{@code TrainingMetrics.setVolume}
+         * 一直在读它。缺的是**中间那一段**：展开函数
+         * （{@code ExpandedWorkout.ExerciseItem}）根本不带这个字段，
+         * 会话快照也就无从拷贝。
+         *
+         * <p>为什么几个月没被发现：读不到时 {@code setVolume} 返回 <b>0</b>，
+         * 而 0 正是 {@code METRICS 4.1}「没记体重就不计容量」的**合法值**。
+         * 于是「引体向上容量 0」看起来完全正常——直到 4B 真的记了体重，
+         * 它还是 0，才露出来。
+         *
+         * <p>所以这三条断言刻意分层：先证明快照里**有**这个值，
+         * 再证明它**流到了数字上**。只看容量的话，返 0 和「系数没拷过来」
+         * 长得一模一样，测不出来。
+         */
+        @Test
+        @DisplayName("★ 会话快照拷贝 bw_factor —— 不拷贝的话自重容量永远是 0")
+        void snapshotCopiesBwFactor() {
+            Exercise pullUp = findExercise("引体向上");
+            assertThat(pullUp.getBwFactor())
+                    .as("前置条件：动作库里引体向上有自重系数").isNotNull();
+
+            Long programId = singleDayProgram(pullUp.getId(), 3, 8, 8);
+
+            SessionDetailResponse session = sessionService.create(USER,
+                    new SessionCreateRequest(programId, 1, DAY, "k-bw", DAY.atTime(19, 0)));
+
+            SessionExercise snapshot = sessionExerciseMapper.selectList(
+                            new LambdaQueryWrapper<SessionExercise>()
+                                    .eq(SessionExercise::getSessionId, session.id()))
+                    .get(0);
+
+            assertThat(snapshot.getBwFactor())
+                    .as("快照必须带上 bw_factor，否则 TrainingMetrics 读到的永远是 null")
+                    .isEqualByComparingTo(pullUp.getBwFactor());
+        }
+
+        @Test
+        @DisplayName("★ 快照体重 × bw_factor × 次数 真的算进了训练总结（AC-7-8）")
+        void bodyweightCountsTowardVolume() {
+            Exercise pullUp = findExercise("引体向上");
+
+            // 训练当天早上的体重。**必须早于 startedAt**——
+            // weightAsOf 查的是「那一刻之前最近的一次」
+            bodyService.record(USER, new BodyMetricRequest(
+                    BodyMetricType.WEIGHT, null, new BigDecimal("70.0"),
+                    DAY.atTime(7, 0), MetricCondition.FASTED, null));
+
+            Long programId = singleDayProgram(pullUp.getId(), 3, 8, 8);
+            SessionDetailResponse session = sessionService.create(USER,
+                    new SessionCreateRequest(programId, 1, DAY, "k-bw-vol", DAY.atTime(19, 0)));
+
+            Long exerciseId = firstExerciseId(session.id());
+            for (int n = 1; n <= 3; n++) {
+                setRecordService.recordSet(USER, session.id(), exerciseId, n,
+                        new SetRecordRequest(SetType.WORKING, null, 8,
+                                null, null, null, null, null, DAY.atTime(19, n * 5)));
+            }
+            setRecordService.updateExerciseStatus(USER, session.id(), exerciseId,
+                    SessionExerciseStatus.COMPLETED);
+            sessionService.finish(USER, session.id(), 1800, null);
+
+            SessionSummaryResponse summary = summaryService.summary(USER, session.id());
+
+            // 70 × 1.00 × 8 × 3 = 1680
+            assertThat(summary.volume())
+                    .as("自重动作的容量 = 体重 × bw_factor × 次数")
+                    .isEqualByComparingTo("1680");
+        }
+
+        @Test
+        @DisplayName("没有体重记录时不计入容量 —— 宁可不计，也不拿假体重算（METRICS 4.1）")
+        void noWeightMeansZeroVolume() {
+            Exercise pullUp = findExercise("引体向上");
+            Long programId = singleDayProgram(pullUp.getId(), 3, 8, 8);
+
+            // 刻意不记体重
+            SessionDetailResponse session = sessionService.create(USER,
+                    new SessionCreateRequest(programId, 1, DAY, "k-bw-now", DAY.atTime(19, 0)));
+
+            Long exerciseId = firstExerciseId(session.id());
+            for (int n = 1; n <= 3; n++) {
+                setRecordService.recordSet(USER, session.id(), exerciseId, n,
+                        new SetRecordRequest(SetType.WORKING, null, 8,
+                                null, null, null, null, null, DAY.atTime(19, n * 5)));
+            }
+            sessionService.finish(USER, session.id(), 1800, null);
+
+            // 注意这条**和上面那条只差一步**（记没记体重），
+            // 所以它不能证明 bw_factor 拷过来了——那由 snapshotCopiesBwFactor 负责。
+            // 它守的是另一件事：拿不到体重时必须是 0，而不是某个默认体重。
+            assertThat(summaryService.summary(USER, session.id()).volume())
+                    .isEqualByComparingTo("0");
+        }
+
+        private Long singleDayProgram(Long exerciseId, int sets, int repsMin, int repsMax) {
+            return programService.create(USER, new ProgramCreateRequest(
+                    "自重验证计划-" + exerciseId, null, 0, START,
+                    List.of(week(1, "0")),
+                    List.of(day(1, "拉日",
+                            new ProgramCreateRequest.PrescriptionRequest(
+                                    exerciseId, 1, null, null, sets, repsMin, repsMax, 120,
+                                    TargetWeightType.ABSOLUTE, null,
+                                    null, null, null, null, null, null)))));
+        }
+    }
+
+    // ==================================================================
+    // 六、状态流转与守卫
     // ==================================================================
 
     @Nested
@@ -479,7 +681,8 @@ class SessionServiceTest {
             Long exerciseId, int sets, int repsMin, int repsMax, int restSec, String weight) {
         return new ProgramCreateRequest.PrescriptionRequest(
                 exerciseId, 1, null, null, sets, repsMin, repsMax, restSec,
-                TargetWeightType.ABSOLUTE, new BigDecimal(weight), null, null, null, null);
+                TargetWeightType.ABSOLUTE, new BigDecimal(weight),
+                null, null, null, null, null, null);
     }
 
     private Exercise findExercise(String name) {

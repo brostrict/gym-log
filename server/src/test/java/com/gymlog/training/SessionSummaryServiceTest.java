@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -34,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 那两个实现分开是性能考虑，但公式必须只有一个「意思」。
  */
 @SpringBootTest
+@ActiveProfiles({"dev", "test"})
 @Transactional
 class SessionSummaryServiceTest {
 
@@ -62,7 +64,7 @@ class SessionSummaryServiceTest {
                         List.of(new ProgramCreateRequest.PrescriptionRequest(
                                 benchId, 1, null, null, 3, 8, 10, 150,
                                 TargetWeightType.ABSOLUTE, new BigDecimal("60"),
-                                null, null, null, null))))));
+                                null, null, null, null, null, null))))));
     }
 
     // ==================================================================

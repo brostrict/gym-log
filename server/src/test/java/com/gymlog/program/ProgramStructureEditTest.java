@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -31,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 原子性只有真的连上数据库才测得出来。
  */
 @SpringBootTest
+@ActiveProfiles({"dev", "test"})
 @Transactional
 class ProgramStructureEditTest {
 
@@ -225,7 +227,8 @@ class ProgramStructureEditTest {
             // 造一个非法结构：超级组只给一个动作（至少要两个）
             ProgramCreateRequest.PrescriptionRequest lonely = new ProgramCreateRequest.PrescriptionRequest(
                     benchId, 1, 1, 1, 3, 8, 10, 120,
-                    TargetWeightType.ABSOLUTE, new BigDecimal("60"), null, null, null, null);
+                    TargetWeightType.ABSOLUTE, new BigDecimal("60"),
+                    null, null, null, null, null, null);
 
             assertThatThrownBy(() -> programService.updateStructure(USER, programId,
                     new ProgramStructureRequest(
@@ -306,7 +309,8 @@ class ProgramStructureEditTest {
             Long exerciseId, int order, int sets, int repsMin, int repsMax, int restSec) {
         return new ProgramCreateRequest.PrescriptionRequest(
                 exerciseId, order, null, null, sets, repsMin, repsMax, restSec,
-                TargetWeightType.ABSOLUTE, new BigDecimal("60"), null, null, null, null);
+                TargetWeightType.ABSOLUTE, new BigDecimal("60"),
+                    null, null, null, null, null, null);
     }
 
     private Exercise findExercise(String name) {

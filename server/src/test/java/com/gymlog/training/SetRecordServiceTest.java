@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 组记录：记录、覆盖、删除、状态推进，以及归属校验。
  */
 @SpringBootTest
+@ActiveProfiles({"dev", "test"})
 @Transactional
 class SetRecordServiceTest {
 
@@ -342,7 +344,8 @@ class SetRecordServiceTest {
     private static ProgramCreateRequest.PrescriptionRequest prescription(Long exerciseId, int sets) {
         return new ProgramCreateRequest.PrescriptionRequest(
                 exerciseId, 1, null, null, sets, 8, 10, 150,
-                TargetWeightType.ABSOLUTE, new BigDecimal("60"), null, null, null, null);
+                TargetWeightType.ABSOLUTE, new BigDecimal("60"),
+                null, null, null, null, null, null);
     }
 
     private Exercise findExercise(String name) {

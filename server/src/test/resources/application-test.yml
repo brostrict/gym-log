@@ -1,0 +1,43 @@
+# ============================================================
+# gym-log 后端 —— 测试环境配置
+#
+# 【为什么是「dev + test」两个 profile 同时激活】
+#
+# 测试要连的是 `gym_log_test` 这个**独立的库**，但连接凭据（账号密码）
+# 在 `application-dev.yml` 里，而那个文件被 .gitignore 忽略了。
+#
+# 如果照抄 dev 的写法，把 url/username/password 都写在这里，
+# 这个文件就被迫要么带密码提交（泄漏），要么也被忽略
+# （那新克隆的人跑测试时会一头雾水）。
+#
+# 所以改成：**只覆盖库名，凭据从 dev 继承**。
+#   @ActiveProfiles({"dev", "test"})
+#
+# Spring 加载顺序是 application-dev.yml → application-test.yml，
+# 后面的覆盖前面的 —— 于是 url 用这份的，username/password 用 dev 的。
+#
+# 这个文件**不含任何密钥，可以放心提交**。
+#
+# 【为什么必须有独立的测试库】
+#
+# 见 db/init.sql 的注释。在此之前测试一直跑在开发库 `gym_log` 上：
+# 平时靠 @Transactional 回滚看不出问题，但**已提交的数据（比如造数据的种子）
+# 对测试是可见的** —— 一旦种下几十场会话，断言「历史列表有 2 条」的测试
+# 就会红，而红的原因看起来和它测的东西毫无关系。
+# ============================================================
+
+spring:
+  datasource:
+    # 只覆盖库名，其余参数沿用 application-dev.yml
+    url: jdbc:mysql://localhost:3306/gym_log_test?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+
+  flyway:
+    # 测试库是空的，靠 Flyway 建表 + 灌内置动作/模板种子（V5/V9/V10）
+    enabled: true
+    locations: classpath:db/migration
+    validate-on-migrate: true
+
+logging:
+  level:
+    # 测试时 SQL 日志太吵，压掉
+    com.gymlog: warn

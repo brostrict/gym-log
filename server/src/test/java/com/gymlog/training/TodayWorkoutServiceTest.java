@@ -17,6 +17,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 这里只测**编排**：选哪个计划、怎么定训练日、展开结果对不对。
  */
 @SpringBootTest
+@ActiveProfiles({"dev", "test"})
 @Transactional
 class TodayWorkoutServiceTest {
 
@@ -314,7 +316,8 @@ class TodayWorkoutServiceTest {
             Long exerciseId, int order, int sets, int repsMin, int repsMax, int restSec, String weight) {
         return new ProgramCreateRequest.PrescriptionRequest(
                 exerciseId, order, null, null, sets, repsMin, repsMax, restSec,
-                TargetWeightType.ABSOLUTE, new BigDecimal(weight), null, null, null, null);
+                TargetWeightType.ABSOLUTE, new BigDecimal(weight),
+                null, null, null, null, null, null);
     }
 
     private Exercise findExercise(String name) {
