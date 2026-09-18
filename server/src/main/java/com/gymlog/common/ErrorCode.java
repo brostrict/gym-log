@@ -108,6 +108,25 @@ public enum ErrorCode {
     PHOTO_UPLOAD_FAILED(60003, "照片上传失败", HttpStatus.INTERNAL_SERVER_ERROR),
     PHOTO_TYPE_NOT_ALLOWED(60004, "不支持的照片格式", HttpStatus.BAD_REQUEST),
 
+    /**
+     * 该指标必须指定部位（围度）。
+     *
+     * <p><b>和 {@link #BODY_METRIC_SITE_NOT_ALLOWED} 分开两个码</b>，
+     * 因为它们要引导用户做的事**相反**：一个是「去选一个部位」，
+     * 一个是「把部位去掉」。合成一个「部位不合法」的话，
+     * 客户端只能弹一句笼统的提示，用户不知道该改哪里。
+     */
+    BODY_METRIC_SITE_REQUIRED(60005, "该指标必须指定部位", HttpStatus.BAD_REQUEST),
+
+    /**
+     * 该指标不支持这个部位。
+     *
+     * <p>挡住的是「左大臂 / 左上臂」这类同义写法，以及
+     * 「体重带了一个部位」这种字段用错。没有这道校验，
+     * 图表的部位切换器会按 site 值分组，同一部位裂成两个选项、各有一半数据。
+     */
+    BODY_METRIC_SITE_NOT_ALLOWED(60006, "该指标不支持指定部位", HttpStatus.BAD_REQUEST),
+
     // ==================== 7xxxx 饮食 ====================
     NUTRITION_LOG_NOT_FOUND(70001, "饮食记录不存在", HttpStatus.NOT_FOUND),
     NUTRITION_INSUFFICIENT_DATA(70002, "记录天数不足，无法估算消耗", HttpStatus.BAD_REQUEST),

@@ -66,6 +66,23 @@ public final class QueryParamGuard {
     }
 
     /**
+     * 这个端点**不接受任何**查询参数。出现任何一个都说明客户端拼错了。
+     *
+     * <p>用 {@link #rejectUnknown} 传一个空字段的类也能达到同样效果，
+     * 但那读起来像在写 hack。有些接口天然没有筛选条件
+     * （比如 PR 看板——它是全时段的，给不出合法的范围参数），
+     * 这种情况要能一眼看出意图。
+     */
+    public static void rejectAll(Collection<String> actualParamNames) {
+        if (actualParamNames == null || actualParamNames.isEmpty()) {
+            return;
+        }
+        throw new BizException(ErrorCode.BAD_REQUEST, String.format(
+                "这个接口不接受查询参数，但收到了：%s",
+                String.join("、", new TreeSet<>(actualParamNames))));
+    }
+
+    /**
      * 参数名里有不认识的就直接抛 400。全都认识则什么也不做。
      *
      * @param queryType        查询对象的类型，用它推导合法参数名
