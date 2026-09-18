@@ -6,6 +6,7 @@ import com.gymlog.common.ErrorCode;
 import com.gymlog.program.dto.ExpandedWorkout;
 import com.gymlog.training.dto.SessionCreateRequest;
 import com.gymlog.training.dto.SessionDetailResponse;
+import com.gymlog.training.dto.SetRecordResponse;
 import com.gymlog.training.dto.TodayWorkoutResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -48,6 +49,7 @@ public class SessionService {
     private final WorkoutSessionMapper sessionMapper;
     private final SessionExerciseMapper sessionExerciseMapper;
     private final SessionSetTargetMapper sessionSetTargetMapper;
+    private final SetRecordMapper setRecordMapper;
     private final TodayWorkoutService todayWorkoutService;
 
     // ==================================================================
@@ -214,7 +216,7 @@ public class SessionService {
     public SessionDetailResponse finish(Long userId, Long sessionId,
                                         Integer durationSec, String note) {
         WorkoutSession session = loadOwned(userId, sessionId);
-        requireInProgress(session, "已完成");
+        requireInProgress(session, "重复结束");
 
         WorkoutSession update = new WorkoutSession();
         update.setId(sessionId);
@@ -241,7 +243,7 @@ public class SessionService {
     @Transactional
     public SessionDetailResponse abandon(Long userId, Long sessionId) {
         WorkoutSession session = loadOwned(userId, sessionId);
-        requireInProgress(session, "已放弃");
+        requireInProgress(session, "放弃");
 
         WorkoutSession update = new WorkoutSession();
         update.setId(sessionId);
@@ -283,15 +285,18 @@ public class SessionService {
                         .eq(SessionExercise::getSessionId, sessionId)
                         .orderByAsc(SessionExercise::getOrderIndex));
 
-        // 一次查出所有逐组目标，避免 N+1
+        // 一次查出所有逐组目标和实际记录，避免 N+1
         Map<Long, List<SessionSetTarget>> setsByExercise = loadSetTargets(exercises);
+        Map<Long, List<SetRecord>> recordsByExercise = loadRecords(exercises);
 
         List<SessionDetailResponse.ExerciseItem> items = exercises.stream()
                 .map(e -> SessionDetailResponse.exerciseFrom(e,
                         setsByExercise.getOrDefault(e.getId(), List.of())
                                 .stream()
                                 .map(SessionDetailResponse.SetTargetItem::from)
-                                .toList()))
+                                .toList(),
+                        SetRecordResponse.Item.from(
+                                recordsByExercise.getOrDefault(e.getId(), List.of()))))
                 .toList();
 
         return SessionDetailResponse.assemble(session, items, resumed);
@@ -313,8 +318,13 @@ public class SessionService {
      *
      * <p>不满足条件统一抛 404（而不是 403）——理由同计划：
      * 不泄露「这个 id 存在」。
+     *
+     * <p><b>public 是给 {@link SetRecordService} 用的</b>：
+     * 组记录是会话内容的一部分，它需要同一套归属校验。
+     * 各自实现一份的话，「查别人的会话返回 404」这条规则就有两个实现，
+     * 迟早会有一个被改歪——而越权漏洞往往就是这么来的。
      */
-    private WorkoutSession loadOwned(Long userId, Long sessionId) {
+    public WorkoutSession loadOwned(Long userId, Long sessionId) {
         WorkoutSession session = sessionMapper.selectById(sessionId);
         if (session == null || !session.isOwnedBy(userId)) {
             throw new BizException(ErrorCode.SESSION_NOT_FOUND);
@@ -328,11 +338,26 @@ public class SessionService {
      * <p>对已结束的会话再次点「完成」应该报错而不是静默成功——
      * 静默成功会让客户端以为第一次的请求丢了，
      * 从而重试出一个「已经完成但数据被覆盖」的状态。
+     *
+     * <p>同样对 {@link SetRecordService} 开放：已结束的训练不能再记录新组，
+     * 否则历史数据会在用户点完「结束」之后继续变化，完成率就算不准了。
      */
-    private void requireInProgress(WorkoutSession session, String action) {
+    public void requireInProgress(WorkoutSession session, String action) {
         if (!session.isInProgress()) {
-            throw new BizException(ErrorCode.SESSION_ALREADY_COMPLETED,
-                    "该训练" + action + "了，无法重复操作");
+            // 文案用**实际状态**拼，而不是让调用方传一句状态描述。
+            //
+            // 原来的写法是 `"该训练" + action + "了，无法重复操作"`，
+            // 调用方传的是「已完成」「已放弃」「已结束」这类描述。
+            // 结果「记录一组」这条路径拼出了
+            // 「该训练已结束了，无法重复操作」——不通，而且「重复操作」也不对，
+            // 用户是第一次记录，不是重复。
+            //
+            // 改成「该训练<当前状态>，无法<动作>」之后，调用方只需传动词：
+            //   该训练已完成，无法重复结束
+            //   该训练已放弃，无法记录
+            throw new BizException(ErrorCode.SESSION_ALREADY_COMPLETED, String.format(
+                    "该训练%s，无法%s",
+                    session.getStatus().getDisplayName(), action));
         }
     }
 
@@ -342,6 +367,26 @@ public class SessionService {
      * <p>空列表时直接返回空 Map——不查库。
      * 不判空的话会生成 {@code WHERE id IN ()} 这种无意义的 SQL。
      */
+    /**
+     * 一次查出所有动作的实际组记录。
+     *
+     * <p>和 {@link #loadSetTargets} 同一个模式：一个 IN 查询，
+     * 不在循环里逐动作查。一个会话 5 个动作就是 5 次往返，
+     * 而断点续训是打开 App 就会走的路径。
+     */
+    private Map<Long, List<SetRecord>> loadRecords(List<SessionExercise> exercises) {
+        if (exercises.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> ids = exercises.stream().map(SessionExercise::getId).toList();
+        return setRecordMapper.selectList(
+                        new LambdaQueryWrapper<SetRecord>()
+                                .in(SetRecord::getSessionExerciseId, ids)
+                                .orderByAsc(SetRecord::getSetNumber))
+                .stream()
+                .collect(Collectors.groupingBy(SetRecord::getSessionExerciseId));
+    }
+
     private Map<Long, List<SessionSetTarget>> loadSetTargets(List<SessionExercise> exercises) {
         if (exercises.isEmpty()) {
             return Map.of();

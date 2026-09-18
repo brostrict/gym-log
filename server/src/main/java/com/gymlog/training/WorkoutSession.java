@@ -65,6 +65,18 @@ public class WorkoutSession {
 
     private BigDecimal weightAdjustPct;
 
+    /**
+     * 快照：训练当天的体重（kg）。
+     *
+     * <p>自重动作的容量 = {@code 体重 × bwFactor × 次数}，
+     * 而体重每周都在变——不快照的话，自重动作的历史容量永远算不准。
+     *
+     * <p><b>⚠️ Phase 4 之前这个字段恒为 NULL</b>：身体数据模块还没做，
+     * 现在没有体重可读。Phase 4 补上「创建会话时读最近一次体重写入这里」。
+     * 字段先留好，是因为事后加列比重构数据便宜得多。
+     */
+    private BigDecimal bodyWeightKg;
+
     private SessionStatus status;
 
     private LocalDateTime startedAt;

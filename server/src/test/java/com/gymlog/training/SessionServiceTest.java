@@ -157,7 +157,7 @@ class SessionServiceTest {
             assertThat(second.id()).isEqualTo(first.id());
             assertThat(second.resumed()).isTrue();
 
-            assertThat(sessionMapper.selectCount(new LambdaQueryWrapper<WorkoutSession>()))
+            assertThat(countMySessions("k-retry"))
                     .as("重试 3 次也只该有一条")
                     .isEqualTo(1);
         }
@@ -176,8 +176,7 @@ class SessionServiceTest {
 
             assertThat(second.id()).isEqualTo(first.id());
             assertThat(second.resumed()).isTrue();
-            assertThat(sessionMapper.selectCount(new LambdaQueryWrapper<WorkoutSession>()))
-                    .isEqualTo(1);
+            assertThat(countMySessions("k-a", "k-b")).isEqualTo(1);
         }
 
         @Test
@@ -194,8 +193,7 @@ class SessionServiceTest {
 
             assertThat(second.id()).isNotEqualTo(first.id());
             assertThat(second.resumed()).isFalse();
-            assertThat(sessionMapper.selectCount(new LambdaQueryWrapper<WorkoutSession>()))
-                    .isEqualTo(2);
+            assertThat(countMySessions("k-1", "k-2")).isEqualTo(2);
         }
 
         @Test
@@ -434,6 +432,25 @@ class SessionServiceTest {
     // ==================================================================
     // 测试数据
     // ==================================================================
+
+    /**
+     * 只数**本测试**创建的会话。
+     *
+     * <p>⚠️ 不能写 {@code selectCount(new LambdaQueryWrapper<>())} 数整张表——
+     * 那样断言就依赖「库里没有别的会话」这个前提。
+     *
+     * <p>这个坑真的踩到了：跑完端到端 HTTP 验证之后，
+     * 那几条真实会话留在库里，这三个测试立刻变红
+     * （`expected: 1L but was: 7L`），而代码一行没改。
+     *
+     * <p>**数全表的测试是环境依赖的测试。** 按 userId + clientKey 限定，
+     * 断言才只关于它自己造的数据。
+     */
+    private long countMySessions(String... clientKeys) {
+        return sessionMapper.selectCount(new LambdaQueryWrapper<WorkoutSession>()
+                .eq(WorkoutSession::getUserId, USER)
+                .in(WorkoutSession::getClientKey, List.of(clientKeys)));
+    }
 
     /** 两天的计划（推日 / 腿日），不限期 */
     private Long twoDayProgram(List<ProgramCreateRequest.WeekRequest> weeks) {

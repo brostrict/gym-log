@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
@@ -54,6 +55,20 @@ public class SessionExercise {
 
     /** 快照：计量类型，决定跟练界面显示哪些录入控件 */
     private String metricType;
+
+    /**
+     * 快照：自重系数。
+     *
+     * <p>自重动作的容量 = {@code 体重 × bwFactor × 次数}（AC-7-8）。
+     *
+     * <p><b>⚠️ 必须快照，不能查询时去动作库现取。</b>
+     * 因为 {@code bw_factor} 是**管理员可编辑的**（M10-B-3）——
+     * 管理员把引体的系数从 1.00 改成 0.95，
+     * 用户三个月前的历史容量会追溯性地变小，而且不报任何错。
+     *
+     * <p>NULL 表示该动作不是自重动作（负重类动作不需要系数）。
+     */
+    private BigDecimal bwFactor;
 
     private Integer orderIndex;
 

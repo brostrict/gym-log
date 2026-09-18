@@ -3,13 +3,17 @@ package com.gymlog.training;
 import com.gymlog.common.Result;
 import com.gymlog.training.dto.SessionCreateRequest;
 import com.gymlog.training.dto.SessionDetailResponse;
+import com.gymlog.training.dto.SetRecordRequest;
+import com.gymlog.training.dto.SetRecordResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -27,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class SessionController {
 
     private final SessionService sessionService;
+    private final SetRecordService setRecordService;
 
     /**
      * 开始一次训练。
@@ -105,5 +110,77 @@ public class SessionController {
     public Result<SessionDetailResponse> abandon(@AuthenticationPrincipal Long userId,
                                                  @PathVariable Long id) {
         return Result.ok(sessionService.abandon(userId, id));
+    }
+
+    // ==================================================================
+    // 组记录
+    // ==================================================================
+
+    /**
+     * 记录 / 覆盖一组。
+     *
+     * <p>请求示例：
+     * <pre>
+     *   PUT /api/v1/sessions/96/exercises/161/sets/3
+     *   { "weight": 70, "reps": 5, "rpe": 8, "restActualSec": 148,
+     *     "completedAt": "2026-09-21T19:42:00" }
+     * </pre>
+     *
+     * <h3>为什么是 PUT 而不是 POST</h3>
+     *
+     * <p>路径 {@code .../sets/3} 已经唯一确定了「哪个动作的第几组」，
+     * 所以这是**幂等**的：同样的请求发几次，结果都一样。
+     * PUT 的语义天然如此，而 POST 意味着「每次都会新建一条」——
+     * 那正是离线重试会产生重复记录的原因。
+     *
+     * <p>唯一索引 {@code (session_exercise_id, set_number)} 是这条幂等性的
+     * 数据库层保障，接口语义只是把它表达出来。
+     *
+     * <p><b>返回的是这个动作的进度，不是整份会话</b>——
+     * 跟练时每 2-3 分钟记一组，每次都拉整份会话没必要。
+     */
+    @PutMapping("/{id}/exercises/{sessionExerciseId}/sets/{setNumber}")
+    public Result<SetRecordResponse> recordSet(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable Long id,
+            @PathVariable Long sessionExerciseId,
+            @PathVariable Integer setNumber,
+            @Valid @RequestBody SetRecordRequest request) {
+        return Result.ok(setRecordService.recordSet(
+                userId, id, sessionExerciseId, setNumber, request));
+    }
+
+    /**
+     * 删除一组（M4-D-3：临时删除组）。
+     *
+     * <p><b>只影响本次会话</b>，不碰计划模板（不变量 3）——
+     * 删掉的那一组，下次练同样的计划还是会有。
+     *
+     * <p>M4-D-5 要求客户端做二次确认；服务端这里做幂等——
+     * 删一个本来就不存在的组不报错，因为离线队列里
+     * 「删除」和「记录」可能乱序到达，报错会让客户端卡在重试上。
+     */
+    @DeleteMapping("/{id}/exercises/{sessionExerciseId}/sets/{setNumber}")
+    public Result<SetRecordResponse> deleteSet(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable Long id,
+            @PathVariable Long sessionExerciseId,
+            @PathVariable Integer setNumber) {
+        return Result.ok(setRecordService.deleteSet(userId, id, sessionExerciseId, setNumber));
+    }
+
+    /**
+     * 改变动作状态（M4-D-1 跳过当前动作）。
+     *
+     * <p>和「记录组」的自动推进不同，这是用户的**明确决定**，
+     * 不该被「记录了几组」覆盖掉。
+     */
+    @PatchMapping("/{id}/exercises/{sessionExerciseId}/status")
+    public Result<SetRecordResponse> updateExerciseStatus(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable Long id,
+            @PathVariable Long sessionExerciseId,
+            @RequestParam SessionExerciseStatus status) {
+        return Result.ok(setRecordService.updateExerciseStatus(userId, id, sessionExerciseId, status));
     }
 }

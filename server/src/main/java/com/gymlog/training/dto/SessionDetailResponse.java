@@ -79,7 +79,20 @@ public record SessionDetailResponse(
             String status,
             String statusLabel,
             String note,
-            List<SetTargetItem> sets
+
+            /** 计划：每一组**应该**做多少 */
+            List<SetTargetItem> sets,
+
+            /**
+             * 实际：每一组**实际**做了多少。
+             *
+             * <p>和 {@link #sets()} 按 {@code setNumber} 对齐，但**不是一对一**：
+             * 用户可以临时加组、少做几组，或者直接不按目标做。
+             *
+             * <p>一次 GET 同时给「该练什么」和「已经练了什么」，
+             * 客户端不必为断点续训再发一次请求。
+             */
+            List<SetRecordResponse.Item> records
     ) {
     }
 
@@ -153,8 +166,10 @@ public record SessionDetailResponse(
                 exercises);
     }
 
-    /** 从快照实体构造动作条目（逐组目标由调用方填充） */
-    public static ExerciseItem exerciseFrom(SessionExercise e, List<SetTargetItem> sets) {
+    /** 从快照实体构造动作条目（逐组目标与实际记录由调用方填充） */
+    public static ExerciseItem exerciseFrom(SessionExercise e,
+                                            List<SetTargetItem> sets,
+                                            List<SetRecordResponse.Item> records) {
         return new ExerciseItem(
                 e.getId(),
                 e.getExerciseId(),
@@ -168,6 +183,7 @@ public record SessionDetailResponse(
                 e.getStatus() == null ? null : e.getStatus().name(),
                 e.getStatus() == null ? null : e.getStatus().getDisplayName(),
                 e.getNote(),
-                sets);
+                sets,
+                records);
     }
 }
