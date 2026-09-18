@@ -4,6 +4,7 @@ import com.gymlog.common.PageResponse;
 import com.gymlog.common.QueryParamGuard;
 import com.gymlog.common.Result;
 import com.gymlog.exercise.dto.ExerciseQuery;
+import com.gymlog.exercise.dto.ExerciseFilterOptionsResponse;
 import com.gymlog.exercise.dto.ExerciseResponse;
 import com.gymlog.exercise.dto.ExerciseSaveRequest;
 import jakarta.servlet.http.HttpServletRequest;
@@ -64,6 +65,25 @@ public class ExerciseController {
         // 先拦下来，后面的代码就不必怀疑自己的入参是不是被吃掉了。
         rejectUnknownParams(request);
         return Result.ok(PageResponse.from(exerciseService.query(userId, query)));
+    }
+
+    /**
+     * 动作库的筛选项。
+     *
+     * <pre>GET /api/v1/exercises/filters</pre>
+     *
+     * <p>客户端据此生成筛选器，**不硬编码枚举值**——理由见
+     * {@link ExerciseFilterOptionsResponse}。
+     *
+     * <p>⚠️ 路径要放在 {@code /{id}} **之前**，否则 Spring 会把 "filters"
+     * 当成一个 id 去解析，报一个和本意毫无关系的类型转换错误。
+     * （实际上 Spring 的路径匹配优先精确路径，不区分声明顺序——
+     * 但把精确路径写在通配路径前面，读代码的人不用去想这件事。）
+     */
+    @GetMapping("/filters")
+    public Result<ExerciseFilterOptionsResponse> filters(HttpServletRequest request) {
+        QueryParamGuard.rejectAll(Collections.list(request.getParameterNames()));
+        return Result.ok(ExerciseFilterOptionsResponse.all());
     }
 
     /**

@@ -317,10 +317,45 @@ public class ExerciseService {
         // ⚠️ 最后一定要有唯一的排序字段（id）。只按前两个排序的话，
         // 相同 sort_order 的记录在不同页之间顺序可能变化，
         // 导致「翻页时看到重复或遗漏的记录」。
-        wrapper.orderByAsc(Exercise::getPrimaryMuscle)
-                .orderByAsc(Exercise::getSortOrder)
-                .orderByAsc(Exercise::getId);
+        //
+        // ⚠️ **肌群必须按枚举顺序排，不能按字段值排。**
+        // `ORDER BY primary_muscle` 走的是字符串序 → ARMS, BACK, CHEST, CORE,
+        // LEGS, SHOULDERS, STRETCH, WARMUP。于是动作库第一屏全是「手臂」，
+        // 而且「胸」排在「核心」后面——和任何人对身体部位的直觉都不一致。
+        //
+        // 用 FIELD() 指定顺序。这**必然**是枚举顺序在 SQL 里的第二份，
+        // 所以有一条契约测试钉住两者一致（`ExerciseServiceTest`）——
+        // 改枚举顺序而忘了改这里，测试会红。
+        //
+        // ⚠️ **整条 ORDER BY 必须一次性写在 `last()` 里。**
+        // `last()` 永远是拼在 SQL 最末尾的，所以
+        // `last("ORDER BY ...").orderByAsc(x)` 会生成
+        // `ORDER BY ... ORDER BY x` —— 两个 ORDER BY，语法错误。
+        //
+        // 代价是列名要用手写的蛇形（`sort_order`），
+        // 失去了 `Exercise::getSortOrder` 那种编译期检查。
+        // 只有两列，且紧挨着写，可以接受。
+        wrapper.last(muscleOrderClause());
 
         return wrapper;
+    }
+
+    /**
+     * 按 {@link MuscleGroup} 的**声明顺序**排肌群。
+     *
+     * <p>直接写字段值出来，因为这是 MyBatis-Plus 的 wrapper 唯一能表达
+     * 「自定义顺序」的方式（它没有 {@code orderByField}）。
+     *
+     * <p>{@code FIELD()} 对不在列表里的值返回 0，会排在最前——
+     * 用户自建动作如果带了个没见过的肌群值，会冒到最上面。
+     * 这不是坏事：那是**异常数据**，让它可见比让它沉底好。
+     */
+    private static String muscleOrderClause() {
+        String values = java.util.Arrays.stream(MuscleGroup.values())
+                .map(m -> "'" + m.name() + "'")
+                .collect(java.util.stream.Collectors.joining(","));
+        // 后两列和 FIELD 一起给出，因为整条 ORDER BY 只能出现在一个地方（见上方注释）
+        return "ORDER BY FIELD(primary_muscle," + values
+                + "), sort_order ASC, id ASC";
     }
 }
