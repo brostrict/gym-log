@@ -12,22 +12,41 @@ import lombok.Data;
  * <p>所有字段都是可选的——不传就是「不按这个维度筛选」。
  *
  * <p><b>为什么用枚举类型而不是 String 接收</b>：
- * Spring 会自动把请求参数转成枚举。传了非法值（如 {@code muscle=INVALID}）
+ * Spring 会自动把请求参数转成枚举。传了非法值（如 {@code primaryMuscle=INVALID}）
  * 会抛类型转换异常，被 {@code GlobalExceptionHandler} 转成 400 参数错误。
  * 如果用 String 接收，就得在 Service 里手动解析并处理非法值——
  * 让框架做这件事更省事，且错误处理是统一的。
+ *
+ * <h3>⚠️ 字段名必须与 {@code ExerciseResponse} 的字段名一致</h3>
+ *
+ * <p>这两个字段原本叫 {@code muscle} 和 {@code pattern}，比响应里的
+ * {@code primaryMuscle} / {@code movementPattern} 短，看着更顺眼。
+ * 但**筛选参数名和响应字段名不一致是个陷阱**：
+ *
+ * <pre>
+ *   客户端看到响应里有 movementPattern，就写 ?movementPattern=HORIZONTAL_PUSH
+ *   → 这个字段在查询对象上不存在
+ *   → Spring 默认**静默忽略**未知参数
+ *   → 返回全部 90 条动作，HTTP 200
+ *   → 客户端以为筛选生效了，其实拿到的是全量数据
+ * </pre>
+ *
+ * <p>这个坑我自己在验收时就踩了一次（见 DEV-LOG 步骤 2.16）。
+ * 所以改名对齐，**同时**在 Controller 上开了「未知参数直接报错」
+ * （{@code ExerciseController#initBinder}）——双保险：
+ * 名字对齐消除最常见的误用，严格绑定兜住其余所有拼写错误。
  */
 @Data
 public class ExerciseQuery {
 
-    /** 按肌群筛选，如 {@code CHEST} */
-    private MuscleGroup muscle;
+    /** 按主要肌群筛选，如 {@code CHEST}。参数名与响应字段 {@code primaryMuscle} 一致 */
+    private MuscleGroup primaryMuscle;
 
     /** 按器械筛选，如 {@code DUMBBELL} */
     private Equipment equipment;
 
-    /** 按动作模式筛选，如 {@code HORIZONTAL_PUSH} */
-    private MovementPattern pattern;
+    /** 按动作模式筛选，如 {@code HORIZONTAL_PUSH}。参数名与响应字段 {@code movementPattern} 一致 */
+    private MovementPattern movementPattern;
 
     /** 按计量类型筛选，如 {@code REPS_ONLY}（找徒手动作时有用） */
     private MetricType metricType;

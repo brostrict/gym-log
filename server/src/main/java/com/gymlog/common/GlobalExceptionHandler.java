@@ -14,7 +14,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import java.lang.reflect.Field;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -92,9 +96,12 @@ public class GlobalExceptionHandler {
                         .map(fe -> fe.getField() + "=" + fe.getRejectedValue() + "(" + fe.getDefaultMessage() + ")")
                         .collect(Collectors.joining(", ")));
 
+        // 同样走 describe()：这条路径上的错误消息一般是我们自己写的
+        // （@Email / @Size 的 message），但嵌套对象绑定失败时也可能出现
+        // typeMismatch，用同一个翻译入口就不会漏
         String message = fieldErrors.isEmpty()
                 ? ErrorCode.BAD_REQUEST.getMessage()
-                : fieldErrors.get(0).getDefaultMessage();
+                : describe(fieldErrors.get(0), e.getBindingResult().getTarget());
 
         return ResponseEntity
                 .status(ErrorCode.BAD_REQUEST.getHttpStatus())
@@ -116,11 +123,88 @@ public class GlobalExceptionHandler {
         List<FieldError> fieldErrors = e.getBindingResult().getFieldErrors();
         String message = fieldErrors.isEmpty()
                 ? ErrorCode.BAD_REQUEST.getMessage()
-                : fieldErrors.get(0).getDefaultMessage();
+                : describe(fieldErrors.get(0), e.getBindingResult().getTarget());
 
         return ResponseEntity
                 .status(ErrorCode.BAD_REQUEST.getHttpStatus())
                 .body(Result.fail(ErrorCode.BAD_REQUEST, message));
+    }
+
+    /**
+     * 把一个字段错误翻译成能直接给用户看的文案。
+     *
+     * <h3>⚠️ 为什么不能直接用 {@code FieldError.getDefaultMessage()}</h3>
+     *
+     * <p>{@code @Min} / {@code @NotBlank} 这类校验注解会把我们写的
+     * {@code message} 放进 {@code defaultMessage}，直接用没问题。
+     *
+     * <p><b>但类型转换失败（{@code typeMismatch}）是个例外</b>——
+     * 它没有自定义消息，{@code defaultMessage} 是 Spring 的原始转换异常文本：
+     *
+     * <pre>
+     *   Failed to convert property value of type 'java.lang.String' to required
+     *   type 'com.gymlog.exercise.MovementPattern' for property 'movementPattern'
+     * </pre>
+     *
+     * <p>三个问题：
+     * <ol>
+     *   <li><b>泄露内部结构</b>——包名、类名、字段名全暴露给客户端</li>
+     *   <li><b>用户看不懂</b>——这是给开发者看的异常，不是给用户看的提示</li>
+     *   <li><b>英文</b>——本项目其余文案全是中文</li>
+     * </ol>
+     *
+     * <p>（{@code handleNotReadable} 早就写了「不要把 {@code e.getMessage()}
+     * 直接返回」，但这条路径漏了。步骤 2.16 验收时才发现。）
+     *
+     * <p>对枚举类型**额外列出所有合法值**——这是开发者最需要的信息，
+     * 而且不用去翻 Swagger。
+     */
+    private String describe(FieldError error, Object target) {
+        if (!"typeMismatch".equals(error.getCode())) {
+            return error.getDefaultMessage();
+        }
+
+        String field = error.getField();
+        String rejected = error.getRejectedValue() == null
+                ? "空值"
+                : String.valueOf(error.getRejectedValue());
+
+        Set<String> allowed = enumConstantsOf(target, field);
+        return allowed.isEmpty()
+                ? String.format("参数 %s 的值不正确：%s", field, abbreviate(rejected))
+                : String.format("参数 %s 的值不正确：%s。可选值：%s",
+                        field, abbreviate(rejected), String.join(" / ", allowed));
+    }
+
+    /** 反射取出该字段如果是枚举，有哪些合法值。取不到就返回空集合 */
+    private Set<String> enumConstantsOf(Object target, String fieldName) {
+        if (target == null) {
+            return Set.of();
+        }
+        try {
+            Field field = target.getClass().getDeclaredField(fieldName);
+            if (!field.getType().isEnum()) {
+                return Set.of();
+            }
+            // 保持声明顺序（TreeSet 会把 CHEST 排到 LEGS 后面，读起来别扭）
+            return Arrays.stream(field.getType().getEnumConstants())
+                    .map(String::valueOf)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+        } catch (NoSuchFieldException ex) {
+            // 字段名对不上（比如嵌套属性 user.age）——不是错误，退化成通用文案
+            return Set.of();
+        }
+    }
+
+    /**
+     * 截断过长的值再回显。
+     *
+     * <p>回显客户端自己传的值是安全的（他本来就知道），但**长度要设上限**——
+     * 否则一个 10MB 的查询参数会被原样塞进错误响应里，既浪费带宽，
+     * 也可能被用来撑爆日志。
+     */
+    private String abbreviate(String value) {
+        return value.length() <= 50 ? value : value.substring(0, 50) + "…";
     }
 
     /** 缺少必填的请求参数，例如 {@code ?page=} 没传 */

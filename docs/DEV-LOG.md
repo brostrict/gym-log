@@ -1299,7 +1299,7 @@ common/PageResponse.java              通用分页响应
 |---|---|
 | alice 全部 | **91**（90 内置 + 1 自定义） |
 | bob 全部 | **90**（只有内置） |
-| `muscle=CHEST` | 15 |
+| `muscle=CHEST` | 15 | <!-- 步骤 2.16 已改名为 primaryMuscle，见下方注记 -->
 | `equipment=DUMBBELL` | 20 |
 | `metricType=REPS_ONLY` | 24 |
 | `onlyCustom=true` | 1 |
@@ -1308,6 +1308,12 @@ common/PageResponse.java              通用分页响应
 | 中文搜索 `深蹲` | 5 |
 | 组合筛选 `CHEST + DUMBBELL` | 4 |
 | 模式筛选 `SQUAT` | 9 |
+
+> **⚠️ 参数名后来改过**（步骤 2.16）：`muscle` → `primaryMuscle`，
+> `pattern` → `movementPattern`，与响应字段名对齐。
+> 上表是当时的原始记录，照着敲请用新名字。
+> 改名原因见步骤 2.16 的验收记录：旧名字会导致
+> **参数被静默忽略、返回全量数据**。
 
 ### ★ 核心安全验证：可见性规则
 
@@ -2541,6 +2547,183 @@ App 首页加载时调的第一个接口（M4-A-1 的今日训练卡片）。
 
 ---
 
+## 步骤 2.16 —— Phase 2 验收 ✅
+
+**日期**：2026-09-18
+
+对着真实 HTTP 接口跑了一遍 M2/M3 的 Must 条目（脚本见 `docs/` 外的临时目录，
+逻辑写在下面的表里）。**43 项检查：42 通过，1 项是已知内容缺口。**
+
+> 验收的价值不在于「全部通过」，而在于**它抓出了 3 个真问题**——
+> 其中 2 个是我自己写的 API 缺陷，1 个是我自己踩的坑。
+> 如果没有这一步，它们会一直潜伏到写 Flutter 客户端时才爆出来。
+
+### 验收结果
+
+| 分组 | 项数 | 结果 |
+|---|---|---|
+| A 数据层 | 1 | ✅ |
+| B 动作库（M2） | 12 | 11 ✅ / 1 ⚠️（M2-4 内容缺口） |
+| C 计划模板（M3-A） | 5 | ✅ |
+| D 自定义计划（M3-B） | 12 | ✅ |
+| E 展开 / 今天练什么 | 6 | ✅ |
+| F 权限（AC-1-1） | 7 | ✅ |
+
+数据层现状：**14 张表、9 个迁移、90 个内置动作、6 个内置模板**。
+
+### 🐛 验收抓出的三个问题
+
+#### ① 筛选参数被静默忽略，返回全量数据（严重）
+
+```
+?movementPattern=HORIZONTAL_PUSH    ← 字段当时叫 pattern
+→ 参数被忽略
+→ 返回全部 90 条，HTTP 200，code=0
+```
+
+**没有任何报错。** 客户端以为筛选生效了，拿到的是全量数据。
+服务端日志里一切正常，这种 bug 在客户端要排查很久。
+
+**这是我自己的验收脚本踩到的**——我照着响应字段名 `movementPattern` 写了参数，
+拿到 90 条还以为「筛选可能没配好」。
+
+更糟的是**我的断言写得太松**：只查了 `total > 0`，所以第一次跑的时候这项是 PASS。
+直到我盯着 `HORIZONTAL_PUSH=90` 这个数字觉得不对才发现的。
+
+> **教训一：断言要检查「结果确实被过滤了」，不能只检查「有结果」。**
+> **教训二：参数名和响应字段名不一致，是在给使用者挖坑。**
+
+修了两处：
+1. **改名对齐**：`muscle` → `primaryMuscle`，`pattern` → `movementPattern`
+2. **加参数白名单校验**：不认识的参数直接 400，并列出所有可用参数
+
+#### ② `WebDataBinder.setIgnoreUnknownFields(false)` 会让每个请求 500（框架陷阱）
+
+修 ① 的时候我先试了框架自带的严格绑定：
+
+```java
+@InitBinder
+public void initBinder(WebDataBinder binder) {
+    binder.setIgnoreUnknownFields(false);   // ← 这一行让所有请求挂掉
+}
+```
+
+结果**连不带任何参数的 `GET /exercises` 都 500**：
+
+```
+NotWritablePropertyException: Invalid property 'acceptencoding'
+  of bean class [com.gymlog.exercise.dto.ExerciseQuery]
+```
+
+原因：**Spring MVC 绑定 `@ModelAttribute` 时会把 HTTP 请求头也当成待绑定属性**。
+关掉「忽略未知字段」后，`Accept-Encoding` → `acceptencoding`、
+`User-Agent` → `useragent` 全变成了非法属性。
+
+框架层面**没有**「对未知查询参数报错、但忽略请求头」的开关。
+最后手写了 `QueryParamGuard`——二十行，而且错误信息比框架做得清楚：
+
+```
+不认识的查询参数：muscle。可用参数：equipment、keyword、metricType、
+movementPattern、onlyCustom、page、primaryMuscle、size
+```
+
+白名单**从 DTO 字段反射推导**，不手写常量列表——
+手写的迟早会和 DTO 漂移，而漂移的表现是「加了新筛选条件但参数被拒」，很难排查。
+
+#### ③ 错误信息泄露内部类名
+
+枚举值传错时的返回：
+
+```
+Failed to convert property value of type 'java.lang.String' to required type
+'com.gymlog.exercise.MovementPattern' for property 'movementPattern'
+```
+
+`com.gymlog.exercise.MovementPattern` —— **包名、类名直接给了客户端**。
+
+根因：`handleBindException` 直接用了 `FieldError.getDefaultMessage()`。
+对 `@Min` / `@NotBlank` 这类注解，`defaultMessage` 是我们自己写的文案，没问题；
+**但类型转换失败（`typeMismatch`）没有自定义消息**，塞进去的是 Spring 的原始异常文本。
+
+> 有意思的是 `handleNotReadable` 早就写了「不要把 `e.getMessage()` 直接返回，
+> 它可能包含类名和字段路径」。**同一个原则，另一条路径漏了。**
+
+修完后：
+
+```
+参数 movementPattern 的值不正确：BOGUS。可选值：HORIZONTAL_PUSH / HORIZONTAL_PULL /
+VERTICAL_PUSH / VERTICAL_PULL / SQUAT / HINGE / LUNGE / CORE / CARRY /
+ELBOW_FLEXION / ELBOW_EXTENSION / CALF_RAISE
+```
+
+不泄露类名、中文、而且**直接列出所有合法值**——不用去翻 Swagger。
+
+### ⚠️ 唯一未通过项：M2-4 动作要领与常见错误
+
+**现状**：`exercise` 表的 `instructions` / `common_mistakes` 两列
+**90 条全为空**。接口层是好的（字段有、能返回），是**种子数据没写**。
+
+**定级**：M2-4 是 **Should**，不是 Must。Phase 2 的目标是
+「能创建计划（含超级组与徒手）并查询今天练什么」，不依赖这两个字段。
+
+**但它的影响不小**：动作详情页会有一块明显的空白，
+对一个求职作品集来说，这是**看得见的未完成**。
+
+**建议**：单独做一步「补充动作要领内容」，优先覆盖
+6 个内置模板引用到的动作（约 30–40 个），其余留空。
+不做全部 90 个的理由：收益递减，而且冷门动作的「要领」
+写出来也未必比不写更有价值。
+
+### 新增的测试（8 个）
+
+| 测试类 | 守什么 |
+|---|---|
+| `QueryParamGuardTest` | 未知参数被拒；白名单**不会与 DTO 漂移** |
+| `GlobalExceptionHandlerTest` | 不泄露类名；列出合法值；自定义校验文案不丢；超长值截断 |
+
+第二个类里有两条断言值得单说：
+
+- `plainValidationKeepsCustomMessage` —— 改异常文案处理时最容易顺手把
+  `@NotBlank(message="邮箱不能为空")` 这类自定义文案也吃掉
+- `truncatesLongRejectedValue` —— 回显客户端传的值是安全的，
+  但**长度要有上限**，否则一个 10MB 的参数会被原样塞进错误响应
+
+**全量测试 71 个全绿。**
+
+### Phase 2 完成总结
+
+#### 交付物
+
+| 类别 | 内容 |
+|---|---|
+| **数据库** | 7 张新表（`exercise` / `program` / `week_template` / `day_template` / `prescribed_exercise` / `prescribed_set` / `program_template`） |
+| **迁移** | V4–V9（动作库表、种子 90 个动作、别名修正、计划 5 表、模板表、种子 6 个模板） |
+| **接口** | 动作库查询/详情/自定义增删改；计划 CRUD、从模板创建、结构编辑、状态切换；周期化展开；「今天练什么」 |
+| **算法** | 周期化展开（纯函数）、训练日轮转（纯函数）、全量替换 + 乐观锁 |
+| **测试** | 71 个（含 17 + 14 个纯函数单测，无 Spring 容器） |
+
+#### 三个值得记住的设计
+
+1. **`-40%` 是「减掉 40%」不是「降到 40%」** ——
+   两种理解差 12kg 且不报错。语义必须写死、写进文档、写进测试。
+2. **训练日按「练了几次」推进，不按日期** ——
+   按周重置会退化成 A/B/A 无限重复；按星期几固定则漏练一次就乱。
+   按次数推进是自愈的。
+3. **全量替换的安全性依赖「会话快照存值不存外键」** ——
+   这条前提写进了 REQUIREMENTS 6.3，并且有一个测试断言 id 会变，
+   哪天有人改成增量更新就会红。
+
+#### 已知欠账（带进 Phase 3）
+
+| # | 欠账 | 影响 | 处理时机 |
+|---|---|---|---|
+| 1 | `SessionCounter` 恒返回 0 | 轮转永远推荐第 1 个训练日 | **Phase 3 第一件事** |
+| 2 | 动作要领 / 常见错误全为空 | 动作详情页空白 | 单独一步补内容 |
+| 3 | 删除计划时不检查是否有训练记录 | 删了计划，历史记录指向已删除的计划 | Phase 3（session 表建好之后） |
+| 4 | AC-3-1 / 3-2 / 3-3 未验证 | 它们都依赖会话快照 | Phase 3 |
+
+---
+
 ## 踩坑汇总
 
 | # | 坑 | 一句话教训 |
@@ -2561,6 +2744,10 @@ App 首页加载时调的第一个接口（M4-A-1 的今日训练卡片）。
 | 14 | `TaskStop` 只杀 Maven 外壳，forked 的 java 进程还占着 8080 | 重启前先 `netstat -ano \| grep :8080` 确认端口真的释放了 |
 | 15 | git-bash 的 curl 会转换 `/tmp/x` 路径，而 Python 把 `/tmp` 当 `C:\tmp` | 两边都用**显式 Windows 路径**，别用 `/tmp` |
 | 16 | `@JsonInclude(NON_NULL)` 让 null 字段在 JSON 里消失 | 客户端一律按「key 可能不存在」处理，不要假设字段总在 |
+| 17 | 查询参数名拼错会被 Spring **静默忽略**，返回全量数据还带 200 | 筛选接口必须校验参数名；断言要检查「确实被过滤了」而不只是「有结果」 |
+| 18 | `setIgnoreUnknownFields(false)` 会把 **HTTP 请求头**也当成待绑定属性 | 框架没有「只严格校验查询参数」的开关，只能自己查 |
+| 19 | `FieldError.getDefaultMessage()` 对 typeMismatch 返回的是 Spring 原始异常文本 | 里面含包名类名，不能直接返回给客户端 |
+| 20 | `BindingResult.rejectValue(f, code, msg)` 的第三参是**错误消息**不是被拒绝的值 | 想指定 rejectedValue 要直接构造 `FieldError` |
 
 > **测试方法本身的坑**：验证「篡改检测」时改了 Base64 的最后一个字符，
 > 结果验签通过了——因为 86 个 Base64 字符 = 516 位，只有 512 位有效，

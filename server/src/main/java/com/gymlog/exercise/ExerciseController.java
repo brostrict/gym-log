@@ -1,10 +1,12 @@
 package com.gymlog.exercise;
 
 import com.gymlog.common.PageResponse;
+import com.gymlog.common.QueryParamGuard;
 import com.gymlog.common.Result;
 import com.gymlog.exercise.dto.ExerciseQuery;
 import com.gymlog.exercise.dto.ExerciseResponse;
 import com.gymlog.exercise.dto.ExerciseSaveRequest;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -16,6 +18,8 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Collections;
 
 /**
  * 动作库接口。
@@ -34,14 +38,17 @@ public class ExerciseController {
      *
      * <p>请求示例：
      * <pre>
-     *   GET /api/v1/exercises                         全部（内置 + 我的）
-     *   GET /api/v1/exercises?muscle=CHEST            只看胸
-     *   GET /api/v1/exercises?equipment=DUMBBELL      只看哑铃动作
-     *   GET /api/v1/exercises?pattern=HORIZONTAL_PUSH 找水平推的替代动作
-     *   GET /api/v1/exercises?metricType=REPS_ONLY    只看徒手动作
-     *   GET /api/v1/exercises?keyword=卧推             搜索
-     *   GET /api/v1/exercises?onlyCustom=true         只看我建的
+     *   GET /api/v1/exercises                               全部（内置 + 我的）
+     *   GET /api/v1/exercises?primaryMuscle=CHEST           只看胸
+     *   GET /api/v1/exercises?equipment=DUMBBELL            只看哑铃动作
+     *   GET /api/v1/exercises?movementPattern=HORIZONTAL_PUSH  找水平推的替代动作
+     *   GET /api/v1/exercises?metricType=REPS_ONLY          只看徒手动作
+     *   GET /api/v1/exercises?keyword=卧推                   搜索
+     *   GET /api/v1/exercises?onlyCustom=true               只看我建的
      * </pre>
+     *
+     * <p><b>参数名与响应字段名一一对应</b>，可以照着响应里看到的字段名直接拼查询串。
+     * 传了不认识的参数会**直接报错**，不会静默忽略（见 {@link #initBinder}）。
      *
      * <p><b>为什么用 {@code @AuthenticationPrincipal} 拿 userId</b>：
      * 查询结果要按用户过滤（只能看到内置 + 自己的自定义动作）。
@@ -50,8 +57,25 @@ public class ExerciseController {
      */
     @GetMapping
     public Result<PageResponse<ExerciseResponse>> list(@AuthenticationPrincipal Long userId,
-                                                       ExerciseQuery query) {
+                                                       ExerciseQuery query,
+                                                       HttpServletRequest request) {
+        // 必须放在最前面：参数名拼错时，Spring 会**静默忽略**它，
+        // 于是后面拿到的是「没加筛选条件」的查询对象。
+        // 先拦下来，后面的代码就不必怀疑自己的入参是不是被吃掉了。
+        rejectUnknownParams(request);
         return Result.ok(PageResponse.from(exerciseService.query(userId, query)));
+    }
+
+    /**
+     * 未知的查询参数**直接报错**，而不是被静默忽略。
+     *
+     * <p>背景与踩坑见 {@link QueryParamGuard}——那里解释了
+     * 为什么不能用框架的 {@code setIgnoreUnknownFields(false)}
+     * （会把 HTTP 请求头也当成待绑定属性，导致每个请求 500）。
+     */
+    private void rejectUnknownParams(HttpServletRequest request) {
+        QueryParamGuard.rejectUnknown(
+                ExerciseQuery.class, Collections.list(request.getParameterNames()));
     }
 
     /**

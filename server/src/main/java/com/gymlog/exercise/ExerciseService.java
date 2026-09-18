@@ -293,9 +293,9 @@ public class ExerciseService {
         wrapper.eq(Exercise::getStatus, Exercise.STATUS_ENABLED);
 
         // ---------- 筛选条件 ----------
-        wrapper.eq(query.getMuscle() != null, Exercise::getPrimaryMuscle, query.getMuscle());
+        wrapper.eq(query.getPrimaryMuscle() != null, Exercise::getPrimaryMuscle, query.getPrimaryMuscle());
         wrapper.eq(query.getEquipment() != null, Exercise::getEquipment, query.getEquipment());
-        wrapper.eq(query.getPattern() != null, Exercise::getMovementPattern, query.getPattern());
+        wrapper.eq(query.getMovementPattern() != null, Exercise::getMovementPattern, query.getMovementPattern());
         wrapper.eq(query.getMetricType() != null, Exercise::getMetricType, query.getMetricType());
 
         // ---------- 关键字搜索 ----------
