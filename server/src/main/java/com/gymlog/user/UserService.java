@@ -16,6 +16,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Locale;
 
@@ -326,6 +328,66 @@ public class UserService {
      * </ol>
      * 这也是**越权防护的体现**：查询条件带 userId，用户只能看到自己的数据。
      */
+    /**
+     * 更新个人资料里**和身体数据推导有关**的三个字段：身高、出生年、性别。
+     *
+     * <h3>为什么单独一个方法，而不是通用的「改资料」</h3>
+     *
+     * <p>这三个字段有一个共同点：<b>它们不直接展示，只参与计算</b>。
+     * 身高算 BMI、腰高比；出生年算年龄，进 Deurenberg 体脂率和 Mifflin-St Jeor BMR；
+     * 性别两个公式都要。
+     *
+     * <p>所以它们的校验也和其他资料字段不同——不是「长度够不够」，
+     * 而是「数值合不合理」：身高 3cm 或 300cm 会让 BMI 变成荒谬的数，
+     * 而那种数**看起来完全正常**，用户不会怀疑是输入错了。
+     *
+     * <p>三个字段都是**可空**的：不填就不推导对应指标。
+     * 不设默认值（比如身高默认 170）——那会让每个没填身高的人
+     * 看到一个基于假身高的 BMI，而它长得和真的一模一样。
+     *
+     * @return 更新后的完整资料
+     */
+    @Transactional
+    public UserProfileResponse updateBodyProfile(Long userId, Integer gender,
+                                                 Integer birthYear, BigDecimal heightCm) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BizException(ErrorCode.USER_NOT_FOUND);
+        }
+
+        if (gender != null) {
+            if (gender != User.GENDER_MALE && gender != User.GENDER_FEMALE
+                    && gender != User.GENDER_UNSET) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "性别取值不合法");
+            }
+            user.setGender(gender);
+        }
+        if (birthYear != null) {
+            int currentYear = LocalDate.now().getYear();
+            // 上下界都卡住：下界是「不能比 120 岁还老」，
+            // 上界是「不能是未来」——用 now() 之外没有别的办法，
+            // 而这是 Service 层，允许（纯函数层才禁止）
+            if (birthYear < currentYear - 120 || birthYear > currentYear) {
+                throw new BizException(ErrorCode.BAD_REQUEST,
+                        "出生年份应在 " + (currentYear - 120) + "–" + currentYear + " 之间");
+            }
+            user.setBirthYear(birthYear);
+        }
+        if (heightCm != null) {
+            if (heightCm.compareTo(new BigDecimal("80")) < 0
+                    || heightCm.compareTo(new BigDecimal("250")) > 0) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "身高应在 80–250 cm 之间");
+            }
+            user.setHeightCm(heightCm);
+        }
+
+        userMapper.updateById(user);
+        log.info("更新身体资料 | userId={} gender={} birthYear={} heightCm={}",
+                userId, user.getGender(), user.getBirthYear(), user.getHeightCm());
+
+        return getProfile(userId);
+    }
+
     public UserProfileResponse getProfile(Long userId) {
         User user = userMapper.selectById(userId);
         if (user == null) {

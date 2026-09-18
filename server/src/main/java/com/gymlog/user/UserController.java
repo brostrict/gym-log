@@ -1,10 +1,14 @@
 package com.gymlog.user;
 
 import com.gymlog.common.Result;
+import com.gymlog.user.dto.BodyProfileRequest;
 import com.gymlog.user.dto.UserProfileResponse;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -51,5 +55,25 @@ public class UserController {
     @GetMapping("/me")
     public Result<UserProfileResponse> me(@AuthenticationPrincipal Long userId) {
         return Result.ok(userService.getProfile(userId));
+    }
+
+    /**
+     * 更新身高 / 出生年 / 性别。
+     *
+     * <pre>PUT /api/v1/users/me/body-profile</pre>
+     *
+     * <p><b>为什么不是通用的 {@code PUT /users/me}</b>：这三个字段的用途
+     * 和其他资料字段完全不同——昵称是显示的，它们是**参与计算的**
+     * （BMI、体脂率估算、BMR）。混在一个接口里的话，
+     * 「改昵称」和「改身高」会共用一套校验规则，而它们该卡的东西不一样。
+     *
+     * <p>只传要改的字段，未传的保持不变。
+     */
+    @PutMapping("/me/body-profile")
+    public Result<UserProfileResponse> updateBodyProfile(
+            @AuthenticationPrincipal Long userId,
+            @Valid @RequestBody BodyProfileRequest body) {
+        return Result.ok(userService.updateBodyProfile(
+                userId, body.gender(), body.birthYear(), body.heightCm()));
     }
 }
