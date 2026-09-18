@@ -1,6 +1,7 @@
 package com.gymlog.training;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.gymlog.body.BodyService;
 import com.gymlog.common.BizException;
 import com.gymlog.common.ErrorCode;
 import com.gymlog.program.dto.ExpandedWorkout;
@@ -13,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -51,10 +53,34 @@ public class SessionService {
     private final SessionSetTargetMapper sessionSetTargetMapper;
     private final SetRecordMapper setRecordMapper;
     private final TodayWorkoutService todayWorkoutService;
+    private final BodyService bodyService;
 
     // ==================================================================
     // 创建
     // ==================================================================
+
+    /**
+     * 取训练前的体重快照。**取不到就返回 null，绝不抛异常。**
+     *
+     * <p>「开训练」是用户最高频、最不能被挡住的操作。体重只是自重动作
+     * 容量的一个乘数——取不到的话那次会话的自重容量记为 0
+     * （{@code METRICS 4.1} 明确接受这个后果），
+     * 但**绝不能因此让用户开不了训练**。
+     *
+     * <p>所以这里吞掉所有异常，只留一条 warn 日志。
+     * 顺带说一句：数据库连不上的话，下面 {@code sessionMapper.insert}
+     * 一样会失败——这里的容错针对的是「体重这一张表出问题」
+     * （比如迁移没跑、列缺失），那种情况下其余功能都是好的。
+     */
+    private BigDecimal snapshotBodyWeight(Long userId, LocalDateTime startedAt) {
+        try {
+            return bodyService.weightAsOf(userId, startedAt);
+        } catch (Exception e) {
+            log.warn("读取训练前体重失败，本次会话的自重容量将记为 0 | userId={} | startedAt={} | {}",
+                    userId, startedAt, e.toString());
+            return null;
+        }
+    }
 
     /**
      * 开始一次训练。
@@ -94,6 +120,18 @@ public class SessionService {
         session.setStartedAt(request.startedAt() == null
                 ? LocalDateTime.now() : request.startedAt());
         session.setIsDeload(0);
+
+        // 快照训练前的体重（REQUIREMENTS 3.3 不变量 1）。
+        //
+        // ⚠️ 用刚刚定下来的 startedAt 去查「那一刻之前最近的一次体重」，
+        // 不是查「现在的体重」——startedAt 是客户端传的，离线补传时
+        // 可能已经过去了两天。见 BodyService.weightAsOf 的注释。
+        //
+        // ⚠️ 这让 training 包依赖 body 包。方向是自然的（训练要用体重），
+        // 但**必须容错**：体重查询失败绝不能让开训练失败。
+        // 取不到就留 NULL，那次会话的自重容量记为 0——
+        // METRICS 4.1「宁可不计，也不能拿假体重算」。
+        session.setBodyWeightKg(snapshotBodyWeight(userId, session.getStartedAt()));
 
         // ---------- 4. 按计划训练：展开并快照 ----------
         List<ExpandedWorkout.ExerciseItem> items = List.of();
@@ -159,6 +197,9 @@ public class SessionService {
         exercise.setExerciseName(item.exerciseName());
         exercise.setPrimaryMuscle(item.primaryMuscle());
         exercise.setMetricType(item.metricType());
+        // ⚠️ 这一行漏了很久：bw_factor 有列、有注释、有消费方，就是没人写。
+        // 后果见 ExerciseItem.bwFactor 的注释——自重动作的容量一直是 0。
+        exercise.setBwFactor(item.bwFactor());
         exercise.setOrderIndex(item.orderIndex());
         exercise.setSupersetGroup(item.supersetGroup());
         exercise.setOrderInGroup(item.orderInGroup());
@@ -179,6 +220,11 @@ public class SessionService {
             target.setTargetReps(set.targetReps());
             target.setTargetRepsMin(set.targetRepsMin());
             target.setTargetRepsMax(set.targetRepsMax());
+
+            // 目标时长同理：展开时已解析，可为 null（= 这一组不是按时间做的）
+            target.setTargetDurationSec(set.targetDurationSec());
+            // 播报间隔展开时一定解析出了值（有默认值兜底），不会是 null
+            target.setAnnounceIntervalSec(set.announceIntervalSec());
 
             // 目标强度是四元组，不是裸重量——RPE 处方算不出具体公斤数
             ExpandedWorkout.Target t = set.target();
@@ -209,14 +255,35 @@ public class SessionService {
      *
      * <p><b>只有完成才推进训练日轮转。</b>见 {@link SessionStatus#COMPLETED}。
      *
-     * @param durationSec 实际训练时长。由客户端上报，不由服务端算
-     *                    （中途暂停了多久只有客户端知道）
+     * <h3>训练时长怎么算</h3>
+     *
+     * <pre>
+     *   时长 = 最后一组的完成时刻 − 会话的开始时刻
+     * </pre>
+     *
+     * <p><b>不用「用户点结束的时刻」。</b>用户练完常常不会马上点结束——
+     * 把手机揣兜里、跟人聊两句、收拾器械，两小时后才想起来点。
+     * 按点结束的时刻算，那两小时会算进训练时长里。
+     *
+     * <p>而组记录的 {@code completed_at} 是**有证据的时间点**：
+     * 那一组确实是在那个时刻做完的。用它当终点，时长就是
+     * 「从开始练到练完最后一组」——**自我修正**，
+     * 不依赖用户在正确的时间点按按钮。
+     *
+     * <p>组间休息、第一组之前的准备与热身**都算在内**（它们本来就是训练的一部分）。
+     *
+     * @param clientDurationSec 客户端上报的时长。
+     *        <b>只在一种情况下使用：该会话一条组记录都没有。</b>
+     *        正常训练永远走上面那个推算路径——客户端算过一遍的东西
+     *        没有理由再让它算第二遍（而且它会算错，见 DEV-LOG 步骤 3.7）。
      */
     @Transactional
     public SessionDetailResponse finish(Long userId, Long sessionId,
-                                        Integer durationSec, String note) {
+                                        Integer clientDurationSec, String note) {
         WorkoutSession session = loadOwned(userId, sessionId);
         requireInProgress(session, "重复结束");
+
+        Integer durationSec = resolveDuration(session, clientDurationSec);
 
         WorkoutSession update = new WorkoutSession();
         update.setId(sessionId);
@@ -229,6 +296,37 @@ public class SessionService {
         log.info("完成训练 | userId={} | sessionId={} | 时长={}秒", userId, sessionId, durationSec);
 
         return detail(userId, sessionId, false);
+    }
+
+    /**
+     * 推算训练时长。
+     *
+     * <p>三种情况，按优先级：
+     * <ol>
+     *   <li><b>有组记录</b> → 最后一组的完成时刻 − 会话开始时刻</li>
+     *   <li><b>没有组记录，但客户端报了时长</b> → 用客户端的</li>
+     *   <li><b>都没有</b> → 0（一组都没做，谈何训练时长）</li>
+     * </ol>
+     *
+     * <p>第 2 条是给「一组没做就结束」留的兜底，
+     * 正常情况下永远走第 1 条。
+     *
+     * <p>{@code max(0, ...)} 是防时钟问题的：客户端上报的
+     * {@code completed_at} 有可能早于服务端记录的 {@code started_at}
+     * （设备时钟偏慢），那样算出来是负数。
+     */
+    private Integer resolveDuration(WorkoutSession session, Integer clientDurationSec) {
+        LocalDateTime lastCompletedAt = setRecordMapper.lastCompletedAt(session.getId());
+
+        if (lastCompletedAt != null && session.getStartedAt() != null) {
+            long seconds = java.time.Duration.between(
+                    session.getStartedAt(), lastCompletedAt).getSeconds();
+            return (int) Math.max(0, seconds);
+        }
+        if (clientDurationSec != null) {
+            return Math.max(0, clientDurationSec);
+        }
+        return 0;
     }
 
     /**

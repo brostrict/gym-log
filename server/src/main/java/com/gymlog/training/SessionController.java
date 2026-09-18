@@ -122,8 +122,12 @@ public class SessionController {
      *
      * <p><b>只有完成才推进训练日轮转。</b>
      *
-     * <p>{@code durationSec} 由客户端上报而不是服务端算
-     * （{@code finishedAt - startedAt}），因为中途暂停了多久只有客户端知道。
+     * <p><b>训练时长由服务端推算</b>：最后一组的完成时刻 − 会话开始时刻。
+     * 不用「点结束的时刻」——用户练完常常不会马上点，
+     * 两小时后才想起来的话那两小时会算进训练时长里。
+     *
+     * <p>{@code durationSec} 参数只在**该会话一条组记录都没有**时作兜底。
+     * 正常训练不需要传。
      */
     @PatchMapping("/{id}/finish")
     public Result<SessionDetailResponse> finish(@AuthenticationPrincipal Long userId,

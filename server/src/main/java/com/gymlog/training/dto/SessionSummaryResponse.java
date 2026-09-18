@@ -78,6 +78,17 @@ public record SessionSummaryResponse(
         List<PersonalRecordItem> personalRecords,
 
         /**
+         * 逐动作明细。
+         *
+         * <p>聚合数字回答「练了多少」，这里回答「**练的是什么**」——
+         * 两者缺一不可：只有「容量 960kg」看不出是卧推还是深蹲推出来的。
+         *
+         * <p>同时带上**计划值**和**实际值**：展开之后能直接看出
+         * 「计划做 4 组，我只做了 2 组」这种执行差异。
+         */
+        List<ExerciseSummary> exercises,
+
+        /**
          * 与上一次同计划同训练日的对比。
          *
          * <p>没有上一次时为 null（第一次练这个训练日）。
@@ -87,6 +98,65 @@ public record SessionSummaryResponse(
         Comparison comparison
 
 ) {
+
+    /**
+     * 一个动作的本次明细。
+     *
+     * <p>紧凑显示（`60×8 · 60×8` 或压缩成 `20×10 ×3`）和展开显示
+     * （计划 vs 实际）用的是**同一份数据**，由客户端决定怎么排版。
+     *
+     * <p>服务端不拼「60×8 · 60×8」这种字符串——
+     * 那是展示逻辑，而且压缩规则（重复的组要不要合并）
+     * 改一次就要动服务端。**结构化数据出，排版留在客户端。**
+     */
+    public record ExerciseSummary(
+            Long exerciseId,
+            String exerciseName,
+            String metricType,
+            String status,
+            String statusLabel,
+            /** 计划组数 */
+            int plannedSets,
+            /** 实际记录的组数（含热身） */
+            int recordedSets,
+            /** 该动作本次的容量（kg） */
+            BigDecimal volume,
+            /** 逐组明细，按组号对齐了计划与实际 */
+            List<SetLine> sets
+    ) {
+    }
+
+    /**
+     * 一组的计划与实际。
+     *
+     * <p>按 {@code setNumber} 把两张表对齐：
+     * <pre>
+     *   用户临时加组 → 有 actual 没有 target
+     *   用户少做几组 → 有 target 没有 actual（done = false）
+     * </pre>
+     * 两种都要能表达，所以两边的字段都可空。
+     */
+    public record SetLine(
+            int setNumber,
+            String setType,
+            String setTypeLabel,
+
+            // ---------- 计划 ----------
+            BigDecimal targetWeight,
+            Integer targetReps,
+            Integer targetRepsMin,
+            Integer targetRepsMax,
+            /** 目标持续时长（秒）。null = 这一组不是按时间做的 */
+            Integer targetDurationSec,
+            Integer restSec,
+
+            // ---------- 实际 ----------
+            boolean done,
+            BigDecimal actualWeight,
+            Integer actualReps,
+            Integer actualDurationSec
+    ) {
+    }
 
     /** 一个动作刷新的个人纪录 */
     public record PersonalRecordItem(

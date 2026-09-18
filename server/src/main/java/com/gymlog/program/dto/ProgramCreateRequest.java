@@ -196,6 +196,27 @@ public record ProgramCreateRequest(
             @DecimalMax(value = "10.0", message = "RPE 最大为 10")
             BigDecimal targetRpe,
 
+            /**
+             * 目标持续时长（秒）。仅时长类动作（平板支撑等）需要。
+             *
+             * <p>不给 {@code @Min(1)} 之外的约束的话，客户端可以传 0 或负数，
+             * 那样倒计时一开始就是负数——不报错，但跟练页会立刻显示「已超时」。
+             */
+            @Min(value = 1, message = "目标时长至少 1 秒")
+            @Max(value = 3600, message = "目标时长最多 3600 秒")
+            Integer targetDurationSec,
+
+            /**
+             * 倒计时期间的播报间隔（秒）。{@code 0} = 不间隔播报。
+             *
+             * <p>注意它**没有**「必须小于 targetDurationSec」的约束：
+             * 间隔比目标还长时，倒计时期间一次都不响，只在超时期间响——
+             * 这是个合法选择（「撑过目标之后再提醒我」），不该被拦。
+             */
+            @Min(value = 0, message = "播报间隔不能为负")
+            @Max(value = 300, message = "播报间隔最多 300 秒")
+            Integer announceIntervalSec,
+
             @Size(max = 255)
             String note,
 

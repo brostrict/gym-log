@@ -60,6 +60,25 @@ public class SessionSetTarget {
     /** 区间次数上限 */
     private Integer targetRepsMax;
 
+    // ---------- 目标时长（等长收缩动作）----------
+
+    /**
+     * 目标持续时长（秒）。null = 本组没有时长目标（卧推这类就不该有）。
+     *
+     * <p>倒计时从这个值开始数，数到 0 即达成目标；继续撑下去的部分
+     * 由客户端转成正计时记录成「已超 N 秒」。
+     *
+     * <p>⚠️ 在 V14 之前，这个秒数是**塞在 {@link #targetRepsMin} 里**的。
+     */
+    private Integer targetDurationSec;
+
+    /**
+     * 倒计时期间的播报间隔（秒）。{@code 0} = 不间隔播报。
+     *
+     * <p>展开时已解析，不会是 null——和 {@link #restSec} 同样的约定。
+     */
+    private Integer announceIntervalSec;
+
     // ---------- 目标强度 ----------
 
     private TargetWeightType targetWeightType;

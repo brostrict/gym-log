@@ -67,4 +67,30 @@ public interface SetRecordMapper extends BaseMapper<SetRecord> {
     /** {@link #bestE1rmBefore} 的投影 */
     record ExerciseBestE1rm(Long exerciseId, BigDecimal bestE1rm) {
     }
+
+    /**
+     * 一次训练里**最后一组的完成时刻**。
+     *
+     * <p>训练时长用它推算，而不是用用户点「结束」的时刻。
+     *
+     * <p><b>为什么</b>：用户练完常常不会马上点结束——把手机揣兜里、
+     * 跟人聊两句、收拾器械，两小时后才想起来点。
+     * 按「点结束的时刻」算，那两小时会算进训练时长里。
+     *
+     * <p>而组记录的 `completed_at` 是**有证据的时间点**：
+     * 那一组确实是在那个时刻做完的。用最后一组的时刻当终点，
+     * 时长就是「从开始练到练完最后一组」，**自我修正**，
+     * 不依赖用户在正确的时间点按按钮。
+     *
+     * <p>热身组也算——第一组往往是热身，它是训练的一部分。
+     *
+     * @return 该会话没有任何组记录时返回 null
+     */
+    @Select("""
+            SELECT MAX(sr.completed_at)
+              FROM set_record sr
+              JOIN session_exercise se ON se.id = sr.session_exercise_id
+             WHERE se.session_id = #{sessionId}
+            """)
+    LocalDateTime lastCompletedAt(@Param("sessionId") Long sessionId);
 }

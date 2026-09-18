@@ -169,6 +169,8 @@ public class ProgramService {
                 pe.setTargetSets(p.targetSets());
                 pe.setTargetRepsMin(p.targetRepsMin());
                 pe.setTargetRepsMax(p.targetRepsMax());
+                pe.setTargetDurationSec(p.targetDurationSec());
+                pe.setAnnounceIntervalSec(p.announceIntervalSec());
                 pe.setRestSec(p.restSec());
                 pe.setTargetWeightType(p.targetWeightType());
                 pe.setTargetWeight(p.targetWeight());
@@ -478,6 +480,9 @@ public class ProgramService {
                 decimalOrNull(e, "targetWeight"),
                 decimalOrNull(e, "targetWeightPct"),
                 decimalOrNull(e, "targetRpe"),
+                // 时长类动作的目标（V14 起是正式字段）
+                intOrNull(e, "targetDurationSec"),
+                intOrNull(e, "announceIntervalSec"),
                 e.hasNonNull("note") ? e.get("note").asText() : null,
                 sets
         );

@@ -79,6 +79,24 @@ public record ExpandedWorkout(
             /** 计量类型。决定跟练界面显示哪些输入控件 */
             MetricType metricType,
 
+            /**
+             * 自重系数。只有 {@code REPS_ONLY} 动作有值。
+             *
+             * <p><b>⚠️ 少了它，自重动作的容量永远是 0。</b>
+             *
+             * <p>这个字段是 4B 时才补上的，但补的不是新功能——{@code V12}
+             * 就加了 {@code session_exercise.bw_factor} 列，注释写着
+             * 「容量 = 体重 × bw_factor × 次数」，而 {@code TrainingMetrics.setVolume}
+             * 一直在读它。缺的是**中间这一段**：展开函数不往外带，
+             * 会话快照就无从拷贝。
+             *
+             * <p>为什么一直没被发现：读不到时 {@code setVolume} 返回 <b>0</b>，
+             * 而 0 正是 {@code METRICS 4.1}「没记体重就不计容量」的**合法值**。
+             * 于是「引体向上容量 0」看起来完全正常，直到 4B 真的记了体重——
+             * 那时它还是 0，才露出来。
+             */
+            BigDecimal bwFactor,
+
             Integer orderIndex,
 
             /** 超级组编号。NULL = 普通动作 */
@@ -112,6 +130,17 @@ public record ExpandedWorkout(
             Integer targetReps,
             Integer targetRepsMin,
             Integer targetRepsMax,
+
+            /**
+             * 目标持续时长（秒）。null = 本组没有时长目标。
+             *
+             * <p>只有 DURATION / DISTANCE_DURATION 类动作才会有值——
+             * 展开时从动作级处方解析，所以这里一定是确定的数字，不需要客户端再回落。
+             */
+            Integer targetDurationSec,
+
+            /** 倒计时期间的播报间隔（秒），0 = 不间隔播报。已解析，不会是 null */
+            Integer announceIntervalSec,
 
             /** 本组之后的休息秒数（已解析，不会是 null） */
             Integer restSec,

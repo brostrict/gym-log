@@ -40,6 +40,7 @@ public class SessionSummaryService {
     private final WorkoutSessionMapper sessionMapper;
     private final SessionExerciseMapper sessionExerciseMapper;
     private final SetRecordMapper setRecordMapper;
+    private final SessionSetTargetMapper sessionSetTargetMapper;
 
     // ==================================================================
     // 历史列表
@@ -90,6 +91,15 @@ public class SessionSummaryService {
 
         Map<Long, List<SetRecord>> recordsByExercise = loadRecords(
                 exercises.stream().map(SessionExercise::getId).toList());
+        Map<Long, List<SessionSetTarget>> targetsByExercise = loadTargets(exercises);
+
+        // ---------- 逐动作明细 ----------
+        List<SessionSummaryResponse.ExerciseSummary> exerciseSummaries = exercises.stream()
+                .map(e -> toExerciseSummary(e,
+                        targetsByExercise.getOrDefault(e.getId(), List.of()),
+                        recordsByExercise.getOrDefault(e.getId(), List.of()),
+                        session))
+                .toList();
 
         // ---------- 统计 ----------
         BigDecimal volume = BigDecimal.ZERO;
@@ -103,7 +113,7 @@ public class SessionSummaryService {
             plannedSets += exercise.getTargetSets() == null ? 0 : exercise.getTargetSets();
 
             for (SetRecord record : recordsByExercise.getOrDefault(exercise.getId(), List.of())) {
-                if (record.getSetType() == SetType.WARMUP) {
+                if (!TrainingMetrics.isWorkingSet(record.getSetType())) {
                     warmupSets++;
                     // ⚠️ 热身组的次数**不累加**进 totalReps。
                     //
@@ -158,6 +168,7 @@ public class SessionSummaryService {
                 skipped,
                 plannedSets,
                 prs,
+                exerciseSummaries,
                 comparison);
     }
 
@@ -272,7 +283,7 @@ public class SessionSummaryService {
         int previousSets = 0;
         for (SessionExercise exercise : previousExercises) {
             for (SetRecord record : previousRecords.getOrDefault(exercise.getId(), List.of())) {
-                if (record.getSetType() != SetType.WARMUP) {
+                if (TrainingMetrics.isWorkingSet(record.getSetType())) {
                     previousSets++;
                 }
                 previousVolume = previousVolume.add(
@@ -406,7 +417,7 @@ public class SessionSummaryService {
                 continue;
             }
             for (SetRecord record : recordsByExercise.getOrDefault(exercise.getId(), List.of())) {
-                if (record.getSetType() != SetType.WARMUP) {
+                if (TrainingMetrics.isWorkingSet(record.getSetType())) {
                     setsBySession.merge(exercise.getSessionId(), 1, Integer::sum);
                 }
                 volumeBySession.merge(exercise.getSessionId(),
@@ -421,6 +432,93 @@ public class SessionSummaryService {
                     setsBySession.getOrDefault(id, 0)));
         }
         return new StatsBundle(stats, exerciseCount);
+    }
+
+    /**
+     * 组装一个动作的明细：把计划与实际**按组号对齐**。
+     *
+     * <p>两边不是一对一，所以用组号的并集：
+     * <pre>
+     *   用户临时加组   → 有实际没计划
+     *   用户少做几组   → 有计划没实际（done = false）
+     * </pre>
+     */
+    private SessionSummaryResponse.ExerciseSummary toExerciseSummary(
+            SessionExercise exercise,
+            List<SessionSetTarget> targets,
+            List<SetRecord> records,
+            WorkoutSession session) {
+
+        Map<Integer, SessionSetTarget> targetByNumber = targets.stream()
+                .collect(Collectors.toMap(SessionSetTarget::getSetNumber, t -> t, (a, b) -> a));
+        Map<Integer, SetRecord> recordByNumber = records.stream()
+                .collect(Collectors.toMap(SetRecord::getSetNumber, r -> r, (a, b) -> a));
+
+        // TreeSet 保证组号有序
+        java.util.TreeSet<Integer> numbers = new java.util.TreeSet<>();
+        numbers.addAll(targetByNumber.keySet());
+        numbers.addAll(recordByNumber.keySet());
+
+        List<SessionSummaryResponse.SetLine> lines = numbers.stream()
+                .map(n -> toSetLine(n, targetByNumber.get(n), recordByNumber.get(n)))
+                .toList();
+
+        BigDecimal volume = records.stream()
+                .map(r -> TrainingMetrics.setVolume(r, exercise, session))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        return new SessionSummaryResponse.ExerciseSummary(
+                exercise.getExerciseId(),
+                exercise.getExerciseName(),
+                exercise.getMetricType() == null ? null : exercise.getMetricType().name(),
+                exercise.getStatus() == null ? null : exercise.getStatus().name(),
+                exercise.getStatus() == null ? null : exercise.getStatus().getDisplayName(),
+                exercise.getTargetSets() == null ? 0 : exercise.getTargetSets(),
+                records.size(),
+                TrainingMetrics.round(volume),
+                lines);
+    }
+
+    private SessionSummaryResponse.SetLine toSetLine(int setNumber,
+                                                     SessionSetTarget target,
+                                                     SetRecord record) {
+
+        // 组类型以**实际**为准：计划里是正式组，用户练到力竭会标成力竭组。
+        // 只在没有实际记录时才回落到计划值。
+        SetType type = (record != null && record.getSetType() != null)
+                ? record.getSetType()
+                : (target == null ? null : target.getSetType());
+
+        return new SessionSummaryResponse.SetLine(
+                setNumber,
+                type == null ? null : type.name(),
+                type == null ? null : type.getDisplayName(),
+
+                target == null ? null : target.getTargetWeight(),
+                target == null ? null : target.getTargetReps(),
+                target == null ? null : target.getTargetRepsMin(),
+                target == null ? null : target.getTargetRepsMax(),
+                target == null ? null : target.getTargetDurationSec(),
+                target == null ? null : target.getRestSec(),
+
+                record != null,
+                record == null ? null : record.getWeight(),
+                record == null ? null : record.getReps(),
+                record == null ? null : record.getDurationSec());
+    }
+
+    /** 一次查出所有动作的计划组目标 */
+    private Map<Long, List<SessionSetTarget>> loadTargets(List<SessionExercise> exercises) {
+        if (exercises.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> ids = exercises.stream().map(SessionExercise::getId).toList();
+        return sessionSetTargetMapper.selectList(
+                        new LambdaQueryWrapper<SessionSetTarget>()
+                                .in(SessionSetTarget::getSessionExerciseId, ids)
+                                .orderByAsc(SessionSetTarget::getSetNumber))
+                .stream()
+                .collect(Collectors.groupingBy(SessionSetTarget::getSessionExerciseId));
     }
 
     private Map<Long, List<SetRecord>> loadRecords(List<Long> sessionExerciseIds) {
@@ -447,7 +545,7 @@ public class SessionSummaryService {
 
     private BigDecimal bestWorkingWeight(List<SetRecord> records) {
         return records.stream()
-                .filter(r -> r.getSetType() != SetType.WARMUP)
+                .filter(r -> TrainingMetrics.isWorkingSet(r.getSetType()))
                 .map(SetRecord::getWeight)
                 .filter(Objects::nonNull)
                 .max(BigDecimal::compareTo)

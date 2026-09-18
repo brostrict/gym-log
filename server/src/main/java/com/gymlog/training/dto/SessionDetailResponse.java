@@ -110,6 +110,12 @@ public record SessionDetailResponse(
             Integer targetReps,
             Integer targetRepsMin,
             Integer targetRepsMax,
+
+            /** 目标持续时长（秒）。null = 本组不是按时间做的 */
+            Integer targetDurationSec,
+            /** 倒计时期间的播报间隔（秒），0 = 不间隔播报。不会是 null */
+            Integer announceIntervalSec,
+
             BigDecimal weight,
             BigDecimal pct,
             BigDecimal rpe,
@@ -126,6 +132,8 @@ public record SessionDetailResponse(
                     t.getTargetReps(),
                     t.getTargetRepsMin(),
                     t.getTargetRepsMax(),
+                    t.getTargetDurationSec(),
+                    t.getAnnounceIntervalSec(),
                     t.getTargetWeight(),
                     t.getTargetWeightPct(),
                     t.getTargetRpe(),

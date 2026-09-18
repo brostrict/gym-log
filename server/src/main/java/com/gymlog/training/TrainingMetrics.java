@@ -4,6 +4,7 @@ import com.gymlog.exercise.MetricType;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Collection;
 
 /**
  * 训练指标的**唯一**计算入口 —— 纯函数，无依赖无状态。
@@ -31,6 +32,37 @@ public final class TrainingMetrics {
     private static final int E1RM_MAX_REPS = 12;
 
     private TrainingMetrics() {
+    }
+
+    // ==================================================================
+    // 组数
+    // ==================================================================
+
+    /**
+     * 这一组算不算「正式组」。
+     *
+     * <p>热身组不计入容量、组数、总次数（{@code METRICS 4.1}）。
+     *
+     * <h4>为什么单独抽出来</h4>
+     *
+     * <p>这条规则原本**内联散落在三个地方**（都写 {@code setType != WARMUP}）：
+     * {@code SessionSummaryService} 的总结主循环、与上次对比、历史列表统计。
+     * 三处各写一遍，看起来毫无风险——直到要加第四个地方（Phase 4 的周组数聚合）。
+     *
+     * <p>「一个公式一处实现」这个类存在的全部理由，就是防这种缓慢分叉：
+     * 某天有人给热身组开了个例外（比如「热身也算半组」），
+     * 他只会在自己改的那一处加，另外三处不动，然后四个数字互相对不上，
+     * **而且都不会报错**。
+     */
+    public static boolean isWorkingSet(SetType setType) {
+        return setType != SetType.WARMUP;
+    }
+
+    /** 一组记录里的正式组数。规则见 {@link #isWorkingSet}。 */
+    public static int countWorkingSets(Collection<SetRecord> records) {
+        return (int) records.stream()
+                .filter(r -> isWorkingSet(r.getSetType()))
+                .count();
     }
 
     // ==================================================================

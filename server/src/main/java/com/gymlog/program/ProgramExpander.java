@@ -57,6 +57,15 @@ public final class ProgramExpander {
     private static final int DEFAULT_REST_SEC = 90;
 
     /**
+     * 倒计时播报间隔的默认值（秒）。
+     *
+     * <p>10 秒是「够频繁到能感知进度、又不至于吵」的折中：
+     * 一个 30 秒的平板支撑会播报 2 次，加上最后 3 秒的三声短音和归零长音，
+     * 一共 4 个时间锚点，闭着眼也能判断还剩多久。
+     */
+    private static final int DEFAULT_ANNOUNCE_INTERVAL_SEC = 10;
+
+    /**
      * 最小有效重量。
      *
      * <p>周修饰是百分比乘法，极端情况下（基准很小 + 大幅 deload）
@@ -125,6 +134,10 @@ public final class ProgramExpander {
                     exercise == null || exercise.getPrimaryMuscle() == null
                             ? null : exercise.getPrimaryMuscle().getDisplayName(),
                     exercise == null ? null : exercise.getMetricType(),
+                    // 自重系数要**带出去**——会话快照靠它算自重动作的容量，
+                    // 而快照不能现查动作库（管理员改了系数，历史容量会追溯性变化）。
+                    // 见 ExerciseItem.bwFactor 的注释。
+                    exercise == null ? null : exercise.getBwFactor(),
                     pe.getOrderIndex(),
                     // 超级组信息原样带出去。
                     // ⚠️ 展开算法**不改变**超级组语义——它只影响执行顺序，
@@ -168,6 +181,30 @@ public final class ProgramExpander {
                 pe.getRestSec(),
                 DEFAULT_REST_SEC);
 
+        // ---------- 目标时长（等长收缩动作）----------
+        //
+        // ⚠️ 这里**故意没有 ps 那一层**，和上面的 reps / restSec 不同。
+        //
+        // 因为 V14 只给 prescribed_exercise 和 session_set_target 加了这两列，
+        // **没有给 prescribed_set 加**：模板 JSON 里没有 sets[] 数组，
+        // 从模板创建的计划 prescribed_set 一行都没有，加了也没有东西能写它，
+        // 却要挂在「updateStructure 全量删重建」这条最容易静默丢字段的路径上。
+        //
+        // M3 做计划编辑器时补一个 V15 DDL，这里再加上 ps 那一层即可
+        //（`firstNonNull(ps == null ? null : ps.getX(), pe.getX())`）。
+        //
+        // 没有默认值也是故意的：卧推本来就不该有目标时长，
+        // 硬塞一个值只会让客户端以为要倒计时。null 在这里是信息——
+        // 「这一组不是按时间做的」。
+        Integer targetDurationSec = pe.getTargetDurationSec();
+
+        // 播报间隔则要有默认值：客户端拿到的是一个确定的数字，
+        // 由它自己决定 0 表示不播报。这样「有没有时长目标」和
+        // 「多久播报一次」是两个独立的问题。
+        Integer announceIntervalSec = firstNonNull(
+                pe.getAnnounceIntervalSec(),
+                DEFAULT_ANNOUNCE_INTERVAL_SEC);
+
         // ---------- 组类型 ----------
         SetType setType = (ps == null || ps.getSetType() == null)
                 ? SetType.WORKING
@@ -181,6 +218,8 @@ public final class ProgramExpander {
                 reps.fixed(),
                 reps.min(),
                 reps.max(),
+                targetDurationSec,
+                announceIntervalSec,
                 restSec,
                 ps == null ? null : ps.getNote()
         );

@@ -96,8 +96,15 @@ public class SetRecord {
      * <p><b>热身组不计入</b>——这是全局口径（REQUIREMENTS 术语表）。
      * 混进去会让所有趋势失真：热身组往往次数多、重量轻，
      * 而且因人因日而异，是最不稳定的一块。
+     *
+     * <p>⚠️ 判定**委托给 {@link TrainingMetrics#isWorkingSet}**，这里不自己写一遍。
+     *
+     * <p>这个方法的存在本身就有一段教训：它写得很早、注释也对，
+     * 但**从来没有被调用过**——服务层四处都自己内联了
+     * {@code setType != WARMUP}。规则写了五遍，一处都没用上这一处。
+     * 现在让它委托出去，两个入口共享同一个实现，改口径只用改一处。
      */
     public boolean countsTowardVolume() {
-        return setType != SetType.WARMUP;
+        return TrainingMetrics.isWorkingSet(setType);
     }
 }

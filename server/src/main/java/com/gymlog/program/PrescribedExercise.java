@@ -59,6 +59,24 @@ public class PrescribedExercise {
     /** 次数上限。等于 min 时表示固定次数 */
     private Integer targetRepsMax;
 
+    /**
+     * 目标持续时长（秒）。仅 {@code DURATION} / {@code DISTANCE_DURATION} 有意义。
+     *
+     * <p>倒计时从这个值开始数，数到 0 即达成目标；继续撑下去的部分
+     * 由客户端转成正计时记录成「已超 N 秒」。
+     *
+     * <p>⚠️ 在 V14 之前，这个秒数是**塞在 {@link #targetRepsMin} 里**的
+     * （模板 JSON 里写着 {@code "note":"目标是秒数"}）。V14 把它搬了过来。
+     */
+    private Integer targetDurationSec;
+
+    /**
+     * 倒计时期间的播报间隔（秒）。{@code 0} = 不间隔播报。
+     *
+     * <p>NULL 表示用默认值（{@code ProgramExpander.DEFAULT_ANNOUNCE_INTERVAL_SEC}）。
+     */
+    private Integer announceIntervalSec;
+
     private Integer restSec;
 
     private TargetWeightType targetWeightType;

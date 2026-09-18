@@ -95,6 +95,12 @@ public record ProgramDetailResponse(
             Integer targetSets,
             Integer targetRepsMin,
             Integer targetRepsMax,
+
+            /** 目标持续时长（秒）。仅时长类动作有值 */
+            Integer targetDurationSec,
+            /** 倒计时期间的播报间隔（秒），0 = 不间隔播报 */
+            Integer announceIntervalSec,
+
             Integer restSec,
 
             String targetWeightType,
@@ -204,6 +210,8 @@ public record ProgramDetailResponse(
                 p.getTargetSets(),
                 p.getTargetRepsMin(),
                 p.getTargetRepsMax(),
+                p.getTargetDurationSec(),
+                p.getAnnounceIntervalSec(),
                 p.getRestSec(),
                 p.getTargetWeightType() == null ? null : p.getTargetWeightType().name(),
                 p.getTargetWeight(),
